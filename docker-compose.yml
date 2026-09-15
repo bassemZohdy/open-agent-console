@@ -1,0 +1,13 @@
+services:
+  open-agent-console:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - open-agent-console-data:/data
+    restart: unless-stopped
+
+volumes:
+  open-agent-console-data:
