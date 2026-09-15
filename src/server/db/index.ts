@@ -10,7 +10,7 @@ export const sqlite = new DatabaseSync(dbFile);
 sqlite.exec('PRAGMA foreign_keys = ON;');
 sqlite.exec('PRAGMA journal_mode = WAL;');
 
-export const db = drizzle(sqlite);
+export const db = drizzle({ client: sqlite });
 
 export function ensureSchema(): void {
   sqlite.exec(`
