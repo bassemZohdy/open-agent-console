@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const providerSchema = z.enum(['openai', 'openai-compatible', 'anthropic', 'google', 'ollama']);
 export const capabilitySchema = z.enum(['streaming', 'tools', 'vision', 'audio', 'structured-output']);
 
-export const createModelSchema = z.object({
+const modelBaseSchema = z.object({
   name: z.string().min(1).max(120),
   provider: providerSchema,
   modelId: z.string().min(1).max(200),
@@ -14,7 +14,9 @@ export const createModelSchema = z.object({
   capabilities: z.array(capabilitySchema).min(1).default(['streaming']),
   timeoutMs: z.number().int().min(1_000).max(300_000).default(60_000),
   maxRetries: z.number().int().min(0).max(10).default(2),
-}).superRefine((value, ctx) => {
+});
+
+export const createModelSchema = modelBaseSchema.superRefine((value, ctx) => {
   if (value.provider !== 'ollama' && !value.apiKeyEnv) {
     ctx.addIssue({ code: 'custom', path: ['apiKeyEnv'], message: 'A credential environment variable is required for this provider' });
   }
@@ -23,7 +25,7 @@ export const createModelSchema = z.object({
   }
 });
 
-export const updateModelSchema = createModelSchema.partial();
+export const updateModelSchema = modelBaseSchema.partial();
 
 export const createAgentSchema = z.object({
   name: z.string().min(1).max(120),
