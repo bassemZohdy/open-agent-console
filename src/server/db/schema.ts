@@ -10,6 +10,9 @@ export const models = sqliteTable('models', {
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   temperature: real('temperature'),
   maxTokens: integer('max_tokens'),
+  capabilitiesJson: text('capabilities_json').notNull().default('["streaming"]'),
+  timeoutMs: integer('timeout_ms').notNull().default(60_000),
+  maxRetries: integer('max_retries').notNull().default(2),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -23,6 +26,8 @@ export const agents = sqliteTable('agents', {
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   temperature: real('temperature'),
   maxTokens: integer('max_tokens'),
+  maxModelCalls: integer('max_model_calls').notNull().default(6),
+  maxToolCalls: integer('max_tool_calls').notNull().default(10),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -51,4 +56,8 @@ export const runs = sqliteTable('runs', {
   startedAt: text('started_at').notNull(),
   completedAt: text('completed_at'),
   error: text('error'),
+  inputTokens: integer('input_tokens'),
+  outputTokens: integer('output_tokens'),
+  totalTokens: integer('total_tokens'),
+  correlationId: text('correlation_id'),
 });
