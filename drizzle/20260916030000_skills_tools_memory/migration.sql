@@ -102,3 +102,13 @@ CREATE TABLE `memories` (
 );
 --> statement-breakpoint
 CREATE INDEX `idx_memories_agent_connector` ON `memories` (`agent_id`,`connector_id`,`updated_at`);
+--> statement-breakpoint
+INSERT INTO `memory_connectors` (`id`,`name`,`type`,`config_json`,`enabled`,`created_at`,`updated_at`)
+VALUES
+('00000000-0000-4000-8000-000000000101','No long-term memory','none','{}',1,datetime('now'),datetime('now')),
+('00000000-0000-4000-8000-000000000102','SQLite long-term memory','sqlite','{}',1,datetime('now'),datetime('now'));
+--> statement-breakpoint
+INSERT INTO `tools` (`id`,`name`,`description`,`kind`,`config_json`,`input_schema_json`,`enabled`,`created_at`,`updated_at`)
+VALUES
+('00000000-0000-4000-8000-000000000001','calculator','Safely evaluate basic arithmetic expressions using +, -, *, / and parentheses.','builtin-calculator','{}','{"type":"object","properties":{"expression":{"type":"string"}},"required":["expression"],"additionalProperties":false}',1,datetime('now'),datetime('now')),
+('00000000-0000-4000-8000-000000000002','current_datetime','Get the current date and time, optionally in an IANA timezone.','builtin-datetime','{}','{"type":"object","properties":{"timeZone":{"type":"string"}},"additionalProperties":false}',1,datetime('now'),datetime('now'));
