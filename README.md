@@ -1,237 +1,149 @@
 # Open Agent Console
 
-Open Agent Console is a lightweight, self-contained web application for configuring, running, and managing multiple small AI agents from reusable registries.
+Open Agent Console is a lightweight, self-contained web application for configuring, running and managing multiple AI agents from reusable registries.
 
-The project deliberately stays smaller than a workflow/orchestration platform: one application, one Docker image, one SQLite database, and logically instantiated agents running in the same Node.js process.
+The product deliberately stays simple: **one application, one Docker image, one SQLite database, and many logical agents running inside the same Node.js process.**
 
-## Current bootstrap scope
+## What works today
 
-The first vertical slice implements:
+- Model registry with OpenAI, OpenAI-compatible, Anthropic, Google Gemini and Ollama adapters
+- Model connection testing, capabilities metadata, retry and timeout configuration
+- Agent registry with create/edit/duplicate/enable-disable/delete operations
+- Agent instructions plus temperature, max-token and execution-limit controls
+- In-process prepared-agent cache with deterministic invalidation
+- Streaming agent chat over versioned Server-Sent Events
+- Persistent sessions/messages with reopening of previous conversations
+- Response cancellation
+- Provider token-usage persistence where available
+- Safe Markdown rendering for assistant responses
+- Paginated session and run APIs
+- Correlation IDs and recent-error visibility
+- SQLite persistence with versioned Drizzle migrations
+- Single production Docker image with healthcheck and persistent `/data` volume
 
-- Model Registry for OpenAI and OpenAI-compatible endpoints
-- Agent Registry with model selection and instructions
-- LangChain JS agent runtime
-- Streaming agent chat using Server-Sent Events
-- Persistent sessions, messages, and run history
-- React control panel
-- SQLite persistence through Drizzle and Node `node:sqlite`
-- Single production Docker image
-- Basic health/readiness endpoints
-- CI for typecheck, lint, tests, application build, and Docker build
-
-Tools, reusable skills, long-term memory connectors, and additional model providers are intentionally staged in [`TODO.md`](TODO.md) rather than being mixed into the initial vertical slice.
+Skills, tools/MCP and long-term memory are intentionally separate follow-up registries; see `TODO.md`.
 
 ## Architecture
 
 ```text
-Browser / React control panel
-          |
-          v
-    Fastify REST + SSE
-          |
-          +---- Model Registry
-          |
-          +---- Agent Registry
-          |
-          +---- Sessions / Runs
-          |
-          v
- AgentRuntimeManager
-          |
-          v
- LangChain createAgent()
-          |
-          v
-      Chat model
-          |
-          v
- OpenAI-compatible endpoint
-
-          +
-        SQLite
+Browser / React
+      |
+      v
+Fastify REST + SSE
+      |
+      +--> Registries / Sessions / Runs --> SQLite
+      |
+      v
+AgentRuntimeManager
+      |
+      v
+LangChain createAgent()
+      |
+      +--> OpenAI / OpenAI-compatible
+      +--> Anthropic
+      +--> Google Gemini
+      +--> Ollama
 ```
 
-Agents are configuration-driven logical runtime instances. Open Agent Console does **not** start a process or Docker container per agent.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for lifecycle, persistence and security details.
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the architectural boundaries and decisions.
-
-## Requirements
-
-- Node.js 24+
-- npm
-- Docker is optional for local development and recommended for the packaged deployment
-
-## Local development
-
-```bash
-cp .env.example .env
-npm install
-npm run dev
-```
-
-Open:
-
-```text
-http://localhost:5173
-```
-
-The Vite development server proxies `/api` requests to Fastify on port `3000`.
-
-Before committing changes run:
-
-```bash
-npm run typecheck
-npm run lint
-npm test
-npm run build
-```
-
-## Run with Docker
-
-Create `.env` first and add the credentials referenced by your model records, then:
+## Quick start with Docker
 
 ```bash
 docker build -t open-agent-console .
 
 docker run --rm \
   -p 3000:3000 \
-  --env-file .env \
   -v open-agent-console-data:/data \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
   open-agent-console
 ```
 
-Open:
+Open `http://localhost:3000`.
 
-```text
-http://localhost:3000
-```
+The application stores its SQLite database at `/data/open-agent-console.db` by default and applies versioned migrations automatically on startup.
 
-The production container serves both the API and compiled React application. Persistent state is stored at `/data/open-agent-console.db` by default.
+## Local development
 
-Docker Compose is also available:
+Requirements:
+
+- Node.js 24+
+- npm
 
 ```bash
-cp .env.example .env
-docker compose up --build
+npm install
+npm run dev
 ```
 
-## First agent
+The Vite development server proxies API calls to Fastify.
 
-### 1. Configure a credential
+Useful checks:
 
-Secrets are not stored in Model Registry rows. A model references the name of an environment variable.
-
-For example:
-
-```dotenv
-OPENAI_API_KEY=your-key
+```bash
+npm run typecheck
+npm run lint
+npm test
+npm run build
+docker build -t open-agent-console .
 ```
 
-For another OpenAI-compatible provider you can define a separate variable:
+## Model configuration
 
-```dotenv
-CUSTOM_LLM_API_KEY=your-key
-```
+A model record stores configuration, not the secret itself. `apiKeyEnv` points to an environment variable available to the Open Agent Console process.
 
-### 2. Register a model
+Examples:
 
-Open **Models** and provide:
+| Provider | Example model ID | Credential reference | Base URL |
+| --- | --- | --- | --- |
+| OpenAI | provider-specific | `OPENAI_API_KEY` | optional |
+| OpenAI-compatible | provider-specific | e.g. `OPENROUTER_API_KEY` | required |
+| Anthropic | provider-specific | `ANTHROPIC_API_KEY` | optional |
+| Google Gemini | provider-specific | `GOOGLE_API_KEY` | optional |
+| Ollama | local model name | none required | optional |
 
-- display name
-- provider: `OpenAI` or `OpenAI compatible`
-- model identifier
-- optional custom base URL
-- API-key environment-variable name
+Use the **Test** action in the Models page to validate the configured provider/model from the running server.
 
-### 3. Create an agent
+## Agent lifecycle
 
-Open **Agents**, choose the registered model, and provide the agent instructions.
+An agent references a registered model and stores its instructions and generation/runtime limits. Updating its configuration invalidates its cached runtime automatically. Disabling an agent prevents new runs without deleting its configuration.
 
-### 4. Chat
+Deleting an agent also removes its associated sessions/messages/runs through SQLite foreign-key cascades. Deleting a model is blocked while an agent still references it.
 
-Select **Chat** next to the agent. Responses stream into the control panel, while the session, messages, and run status are persisted in SQLite.
+## Sessions and runs
 
-## Configuration
+Chat history belongs to Open Agent Console rather than an external LLM framework checkpoint store. Existing sessions can be reopened from the Sessions page and continue with their saved message history.
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `PORT` | `3000` | Fastify port |
-| `HOST` | `0.0.0.0` | Bind address |
-| `DB_FILE_NAME` | `./data/open-agent-console.db` | SQLite database path |
-| `OPENAI_API_KEY` | unset | Example credential referenced by a model |
+Runs record status, errors, correlation IDs, and token usage when the selected provider returns usage metadata.
 
-Additional model credentials can use any uppercase environment-variable name configured in the Model Registry.
-
-## API surface
-
-The bootstrap exposes these main endpoints:
+## API health
 
 ```text
-GET  /api/health
-GET  /api/ready
-GET  /api/models
-POST /api/models
-GET  /api/agents
-POST /api/agents
-POST /api/agents/:id/chat
-GET  /api/sessions
-GET  /api/sessions/:id/messages
-GET  /api/runs
+GET /api/health
+GET /api/ready
 ```
 
-`POST /api/agents/:id/chat` streams events using `text/event-stream`.
+`/api/ready` verifies that SQLite is queryable. The Docker healthcheck uses `/api/health`.
 
-## Project structure
+## Security baseline
 
-```text
-src/
-├── server/
-│   ├── db/
-│   ├── domain/
-│   ├── runtime/
-│   ├── app.ts
-│   └── index.ts
-└── web/
-    ├── App.tsx
-    ├── main.tsx
-    └── styles.css
+- secrets stay in environment variables
+- request payloads are validated with Zod
+- request body size is limited
+- model timeouts/retries are bounded
+- model/tool call counts are bounded per run
+- assistant Markdown does not enable raw HTML and is sanitized
+- arbitrary JavaScript execution from the UI is not supported
 
-tests/
-ARCHITECTURE.md
-TODO.md
-Dockerfile
-```
+HTTP/MCP tools are not enabled until their dedicated security boundaries are implemented.
 
-## Current model support
+## Non-goals
 
-The bootstrap currently uses LangChain `ChatOpenAI` for:
-
-- OpenAI
-- services exposing an OpenAI-compatible endpoint through a configurable base URL
-
-Anthropic, Gemini, and Ollama provider-specific adapters are planned after the initial vertical slice is stable.
-
-## Deliberate non-goals for v1
-
-Open Agent Console is not intended to become a workflow engine or distributed agent control plane.
-
-The following are explicitly outside the v1 boundary:
-
-- visual workflow designer
-- distributed agent runtime
-- agent-per-container execution
-- Kubernetes operator
-- multi-agent orchestration
-- A2A protocol
-- message broker
-- enterprise RBAC/SSO
-- arbitrary JavaScript execution from the UI
-- plugin marketplace
+The current project does **not** aim to be a visual workflow builder, distributed agent runtime, agent-per-container platform, Kubernetes operator, A2A platform, message-broker-based system or enterprise IAM product.
 
 ## Roadmap
 
-The working backlog is maintained in [`TODO.md`](TODO.md). The next major areas are persistence hardening, provider adapters, full agent lifecycle operations, session UX, reusable skills, safe tools/MCP integration, and long-term memory connectors.
+The active backlog is maintained in [TODO.md](TODO.md). Completed work is removed from that file so it represents only outstanding tasks.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [LICENSE](LICENSE).
