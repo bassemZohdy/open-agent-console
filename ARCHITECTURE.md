@@ -49,7 +49,7 @@ SQLite stores registry configuration, sessions, messages, runs, tool calls and m
 - **Tool Calls** capture runtime tool status, input, bounded output and failure details independently from the parent run.
 - **Memories** store long-term content by agent and connector without being mixed into session messages.
 
-The current HTTP/UI surface exposes models, agents, sessions, runs and chat. The skills/tools/MCP/memory tables and runtime boundaries are implemented below that surface; their CRUD and mapping endpoints/pages remain backlog work.
+The HTTP/UI surface exposes all registries, ordered agent mappings, effective-prompt inspection, settings transfer, sessions, runs and chat. Registry imports are versioned and deliberately omit secrets and long-term memories.
 
 ## Agent runtime lifecycle
 
@@ -110,7 +110,7 @@ The `20260916030000_skills_tools_memory` migration adds skills, tools, MCP serve
 - HTTP tools validate schemes, reject URL credentials, reject private/restricted DNS results, bound timeout/output and disable redirects.
 - MCP credentials are resolved from environment variables rather than stored secret values.
 - Arbitrary JavaScript execution is out of scope.
-- HTTP/MCP registry exposure and broader SSRF hardening remain subject to the unfinished management APIs and tests.
+- HTTP/MCP registry exposure is available through the management surface. HTTP and MCP targets are checked against public DNS results before runtime access; HTTP calls additionally reject redirects and enforce timeout/output bounds.
 
 ## Non-goals
 

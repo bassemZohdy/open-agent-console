@@ -19,13 +19,19 @@ The product deliberately stays simple: **one application, one Docker image, one 
 - Paginated session and run APIs
 - Correlation IDs and recent-error visibility
 - SQLite persistence with versioned Drizzle migrations
-- Skills, tools/MCP and memory connector persistence/runtime foundations
+- Skills registry CRUD, ordered agent mappings and effective-prompt preview
+- Tools registry CRUD with JSON Schema validation, bounded HTTP actions and MCP server discovery
+- Memory connector and long-term-memory CRUD, including `none` and SQLite runtimes
+- Settings surface plus versioned registry import/export that excludes secrets and memories
+- Deterministic fake chat model for CI and a local OpenAI-compatible integration fixture
+- Frontend component coverage for the management shell
+- Versioned GitHub release workflow triggered by `v*.*.*` tags
 - Deterministic effective prompts from agent instructions, enabled skills and long-term memory
 - Safe built-in calculator/date tools plus bounded HTTP and MCP resolver foundations
 - Tool-call persistence for runtime-resolved tools
 - Single production Docker image with healthcheck and persistent `/data` volume
 
-The skills, tools/MCP and long-term-memory foundations are implemented below the current model/agent control-panel surface. Their CRUD APIs, management pages and agent mapping controls remain in `TODO.md`.
+The control panel exposes all current registry/runtime surfaces. See `DESIGN.md` for the UI language and `UX-CONTRACT.md` for interaction behavior.
 
 ## Architecture
 
@@ -134,7 +140,7 @@ An agent references a registered model and stores its instructions, optional ski
 
 Deleting an agent also removes its associated sessions/messages/runs through SQLite foreign-key cascades. Deleting a model is blocked while an agent still references it.
 
-The current control panel exposes model and agent management. Skills, tools, MCP servers, memory connectors and effective-prompt inspection are runtime foundations awaiting their dedicated API and UI work.
+The control panel exposes model, agent, skill, tool, MCP server and memory management. Effective prompts can be inspected from the agent editor before a run.
 
 ## Sessions and runs
 
@@ -155,7 +161,7 @@ The currently exposed API includes:
 | Sessions | `GET /api/sessions`, `GET /api/sessions/:id/messages` |
 | Runs | `GET /api/runs` |
 
-The skills, tools, MCP and memory registry tables are already versioned and available to the runtime repository layer; their HTTP endpoints are tracked as remaining work.
+All registry tables are available through validated HTTP APIs and the control panel.
 
 ## API health
 
@@ -179,7 +185,7 @@ GET /api/ready
 - assistant Markdown does not enable raw HTML and is sanitized
 - arbitrary JavaScript execution from the UI is not supported
 
-HTTP/MCP tools are runtime foundations and are not currently configurable from the control panel. External tool exposure remains subject to the resolver safeguards and the follow-up API/UI work.
+HTTP/MCP tools are configurable from the control panel. Runtime exposure remains subject to JSON Schema validation, public DNS checks, bounded timeouts/output, redirect rejection and environment-backed headers.
 
 ## Non-goals
 
@@ -189,7 +195,7 @@ The current project does **not** aim to be a visual workflow builder, distribute
 
 The active backlog is maintained in [TODO.md](TODO.md). Completed work is removed from that file so it represents only outstanding tasks.
 
-The next product step is to expose the merged skills, tools/MCP and memory foundations through validated CRUD APIs and control-panel pages, then add deterministic runtime tests and a versioned release workflow.
+The next product step is a new scoped milestone; this release closes the M5–M9 backlog.
 
 ## License
 
