@@ -78,10 +78,11 @@ docker.io/<DOCKERHUB_USERNAME>/open-agent-console:latest
 docker.io/<DOCKERHUB_USERNAME>/open-agent-console:sha-<commit>
 ```
 
-Configure these GitHub Actions repository secrets before merging to `main`:
+Configure the Docker Hub token as a GitHub Actions repository secret before merging to `main`:
 
-- `DOCKERHUB_USERNAME`: the Docker Hub account or organization name
 - `DOCKERHUB_TOKEN`: a Docker Hub access token with permission to push to the repository
+
+The workflow uses the `bzohdy` Docker Hub account for this repository by default. Set `DOCKERHUB_USERNAME` when publishing under another account or organization. Common aliases `DOCKER_USERNAME` and `DOCKERHUB_USER` are also accepted.
 
 The image is built and published by GitHub Actions only after the verification job passes.
 
