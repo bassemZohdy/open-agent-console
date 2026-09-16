@@ -14,37 +14,46 @@ React control panel
       v
 Fastify REST + SSE API
       |
-      +--> Model Registry --------+
-      |                           |
-      +--> Agent Registry         |
-      |                           v
-      +--> Session / Run APIs --> AgentRuntimeManager
-                                  |
-                         cached LangChain createAgent()
-                                  |
-                 +----------------+----------------+
-                 |                |                |
-              OpenAI          Anthropic        Google
-                 |                                 |
-        OpenAI-compatible                         Gemini
-                 |
-              Ollama
+      +--> Models / Agents / Sessions / Runs --------+
+      |                                               |
+      +--> Skills / Tools / MCP / Memory foundations |
+                                                      v
+                                             AgentRuntimeManager
+                                                      |
+                                  +-------------------+-------------------+
+                                  |                   |                   |
+                           Effective prompt      Resolved tools      Memory connector
+                                  |                   |                   |
+                                  +-------------------+-------------------+
+                                                      |
+                                             cached LangChain createAgent()
+                                                      |
+                         +----------------------------+----------------------------+
+                         |             |              |              |              |
+                      OpenAI      Compatible      Anthropic        Google         Ollama
+                                                                    Gemini
 
-SQLite stores models, agents, sessions, messages and runs.
+SQLite stores registry configuration, sessions, messages, runs, tool calls and memories.
 ```
 
 ## Registry boundaries
 
 - **Model Registry** stores provider/model configuration, declared capabilities, timeout/retry defaults and an indirect environment-variable credential reference.
-- **Agent Registry** stores instructions, model reference, generation overrides, enabled state and bounded model/tool-call limits.
+- **Agent Registry** stores instructions, model reference, optional ordered skill/tool references, optional memory connector reference, generation overrides, enabled state and bounded model/tool-call limits.
+- **Skills Registry foundation** stores reusable enabled instructional content. The runtime adds enabled skills in deterministic mapping order.
+- **Tools Registry foundation** stores built-in, HTTP and MCP tool definitions, JSON Schema inputs, enabled state and optional MCP server references.
+- **Memory Connector foundation** distinguishes the `none` connector from SQLite long-term memory. Long-term memory is separate from session message history.
+- **MCP Server foundation** stores HTTP MCP endpoints and environment-backed header references.
 - **Sessions and messages** are application-owned persisted conversation history.
 - **Runs** capture status, correlation ID, provider token usage where available, duration inputs and errors.
+- **Tool Calls** capture runtime tool status, input, bounded output and failure details independently from the parent run.
+- **Memories** store long-term content by agent and connector without being mixed into session messages.
 
-Skills, tools/MCP and long-term memory remain separate upcoming registries rather than being embedded into agent JSON.
+The current HTTP/UI surface exposes models, agents, sessions, runs and chat. The skills/tools/MCP/memory tables and runtime boundaries are implemented below that surface; their CRUD and mapping endpoints/pages remain backlog work.
 
 ## Agent runtime lifecycle
 
-`AgentRuntimeManager` resolves an enabled agent and model into a LangChain `createAgent()` runtime. Prepared runtimes are cached in-process using the agent/model `updatedAt` values as a deterministic cache key. Registry mutations invalidate the relevant cache entries.
+`AgentRuntimeManager` resolves an enabled agent and model into a LangChain `createAgent()` runtime. It builds the effective system prompt from agent instructions, enabled ordered skills and loaded long-term memory, then resolves enabled built-in, HTTP and MCP tools. Prepared runtimes are cached in-process using the agent/model `updatedAt` values as a deterministic cache key. Registry mutations invalidate the relevant cache entries.
 
 The runtime applies bounded model-call and tool-call middleware. A request may be cancelled through an `AbortSignal`; cancelled executions are persisted as such rather than failed runs.
 
@@ -81,6 +90,8 @@ SQLite uses Node's built-in `node:sqlite` driver through Drizzle ORM. Startup ap
 
 SQLite uses foreign-key enforcement, WAL mode and a busy timeout. API-level referential checks provide clearer conflict messages before database constraints are reached.
 
+The `20260916030000_skills_tools_memory` migration adds skills, tools, MCP servers, memory connectors, agent mappings, tool calls and long-term memories, and seeds the safe calculator/date tools plus `none` and SQLite connector records. Existing databases are upgraded in place; `/data` must not be deleted during normal upgrades.
+
 ## Operational baseline
 
 - `/api/health` reports process health.
@@ -88,6 +99,7 @@ SQLite uses foreign-key enforcement, WAL mode and a busy timeout. API-level refe
 - Every request receives an `x-correlation-id`; agent runs persist the same correlation identifier.
 - The Docker image contains migrations, OCI image metadata and a healthcheck.
 - Model/API secrets are environment-variable references and are never stored in registry records.
+- CI verifies the application and Docker build on pull requests and `main`; successful `main` runs publish immutable SHA-tagged and `latest` images to Docker Hub.
 
 ## Security baseline
 
@@ -95,8 +107,10 @@ SQLite uses foreign-key enforcement, WAL mode and a busy timeout. API-level refe
 - Request bodies are size-limited.
 - Model calls have bounded retries/timeouts.
 - Agent model/tool call counts are bounded.
+- HTTP tools validate schemes, reject URL credentials, reject private/restricted DNS results, bound timeout/output and disable redirects.
+- MCP credentials are resolved from environment variables rather than stored secret values.
 - Arbitrary JavaScript execution is out of scope.
-- HTTP/MCP tools will require explicit SSRF, timeout and output-size boundaries before they are enabled.
+- HTTP/MCP registry exposure and broader SSRF hardening remain subject to the unfinished management APIs and tests.
 
 ## Non-goals
 

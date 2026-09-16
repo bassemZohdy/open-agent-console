@@ -1,9 +1,9 @@
 FROM node:24-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 COPY . .
-RUN npm run typecheck && npm run build
+RUN npm run build
 
 FROM node:24-alpine AS runtime
 LABEL org.opencontainers.image.title="Open Agent Console" \
@@ -12,7 +12,7 @@ LABEL org.opencontainers.image.title="Open Agent Console" \
 ENV NODE_ENV=production PORT=3000 HOST=0.0.0.0 DB_FILE_NAME=/data/open-agent-console.db DB_MIGRATIONS_DIR=/app/drizzle
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/drizzle ./drizzle
 COPY --from=build /app/index.html ./index.html

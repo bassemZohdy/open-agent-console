@@ -17,11 +17,22 @@ export const models = sqliteTable('models', {
   updatedAt: text('updated_at').notNull(),
 });
 
+export const memoryConnectors = sqliteTable('memory_connectors', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  type: text('type').notNull(),
+  configJson: text('config_json').notNull().default('{}'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const agents = sqliteTable('agents', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
   modelRef: text('model_ref').notNull().references(() => models.id, { onDelete: 'restrict' }),
+  memoryConnectorId: text('memory_connector_id').references(() => memoryConnectors.id, { onDelete: 'set null' }),
   instructions: text('instructions').notNull(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   temperature: real('temperature'),
@@ -30,6 +41,54 @@ export const agents = sqliteTable('agents', {
   maxToolCalls: integer('max_tool_calls').notNull().default(10),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+});
+
+export const skills = sqliteTable('skills', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description'),
+  instructions: text('instructions').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const mcpServers = sqliteTable('mcp_servers', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  url: text('url').notNull(),
+  headersJson: text('headers_json').notNull().default('{}'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const tools = sqliteTable('tools', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description').notNull(),
+  kind: text('kind').notNull(),
+  configJson: text('config_json').notNull().default('{}'),
+  inputSchemaJson: text('input_schema_json').notNull().default('{"type":"object","additionalProperties":false}'),
+  mcpServerId: text('mcp_server_id').references(() => mcpServers.id, { onDelete: 'cascade' }),
+  externalName: text('external_name'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const agentSkills = sqliteTable('agent_skills', {
+  id: text('id').primaryKey(),
+  agentId: text('agent_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
+  skillId: text('skill_id').notNull().references(() => skills.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull().default(0),
+});
+
+export const agentTools = sqliteTable('agent_tools', {
+  id: text('id').primaryKey(),
+  agentId: text('agent_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
+  toolId: text('tool_id').notNull().references(() => tools.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull().default(0),
 });
 
 export const sessions = sqliteTable('sessions', {
@@ -60,4 +119,28 @@ export const runs = sqliteTable('runs', {
   outputTokens: integer('output_tokens'),
   totalTokens: integer('total_tokens'),
   correlationId: text('correlation_id'),
+});
+
+export const toolCalls = sqliteTable('tool_calls', {
+  id: text('id').primaryKey(),
+  runId: text('run_id').notNull().references(() => runs.id, { onDelete: 'cascade' }),
+  toolId: text('tool_id').references(() => tools.id, { onDelete: 'set null' }),
+  toolName: text('tool_name').notNull(),
+  status: text('status').notNull(),
+  inputJson: text('input_json').notNull().default('{}'),
+  output: text('output'),
+  error: text('error'),
+  startedAt: text('started_at').notNull(),
+  completedAt: text('completed_at'),
+});
+
+export const memories = sqliteTable('memories', {
+  id: text('id').primaryKey(),
+  connectorId: text('connector_id').notNull().references(() => memoryConnectors.id, { onDelete: 'cascade' }),
+  agentId: text('agent_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
+  key: text('key'),
+  content: text('content').notNull(),
+  metadataJson: text('metadata_json').notNull().default('{}'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
 });
