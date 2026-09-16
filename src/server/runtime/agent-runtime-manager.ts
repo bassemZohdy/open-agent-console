@@ -3,14 +3,19 @@ import { and, asc, eq } from 'drizzle-orm';
 import { createAgent, modelCallLimitMiddleware, toolCallLimitMiddleware } from 'langchain';
 import type { InferSelectModel } from 'drizzle-orm';
 import { db } from '../db/index.js';
+import { RegistryRepository } from '../db/repository.js';
 import { agents, messages, models, runs, sessions } from '../db/schema.js';
+import { resolveMemoryConnector } from './memory-service.js';
 import { createChatModel } from './model-factory.js';
+import { buildEffectivePrompt } from './prompt-builder.js';
+import { resolveTools } from './tool-resolver.js';
 
 type AgentRecord = InferSelectModel<typeof agents>;
 type ModelRecord = InferSelectModel<typeof models>;
 type Runtime = ReturnType<typeof createAgent>;
-
 type Usage = { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+
+type CachedRuntime = { key: string; runtime: Runtime; dispose: () => Promise<void> };
 
 export type StreamEvent =
   | { version: 1; type: 'session'; sessionId: string; runId: string; correlationId: string }
@@ -34,35 +39,50 @@ function normalizeUsage(value: unknown): Usage {
 }
 
 export class AgentRuntimeManager {
-  private readonly cache = new Map<string, { key: string; runtime: Runtime }>();
+  private readonly cache = new Map<string, CachedRuntime>();
+  private readonly repository = new RegistryRepository();
 
-  invalidateAgent(agentId: string): void {
+  private disposeEntry(agentId: string): void {
+    const entry = this.cache.get(agentId);
     this.cache.delete(agentId);
+    if (entry) void entry.dispose();
   }
+
+  invalidateAgent(agentId: string): void { this.disposeEntry(agentId); }
 
   invalidateAll(): void {
-    this.cache.clear();
+    for (const agentId of this.cache.keys()) this.disposeEntry(agentId);
   }
 
-  private getRuntime(agentRow: AgentRecord, modelRow: ModelRecord): Runtime {
+  async effectivePrompt(agentId: string): Promise<string> {
+    const agentRow = await this.repository.getAgent(agentId);
+    if (!agentRow) throw new Error('Agent not found');
+    const orderedSkills = (await this.repository.listAgentSkills(agentId)).map(({ skill }) => skill);
+    const memory = await resolveMemoryConnector(this.repository, agentRow);
+    return buildEffectivePrompt(agentRow, orderedSkills, await memory.load(agentRow));
+  }
+
+  private async getRuntime(agentRow: AgentRecord, modelRow: ModelRecord): Promise<Runtime> {
     const key = `${agentRow.updatedAt}:${modelRow.updatedAt}`;
     const cached = this.cache.get(agentRow.id);
     if (cached?.key === key) return cached.runtime;
+    if (cached) this.disposeEntry(agentRow.id);
 
-    const model = createChatModel(modelRow, {
-      temperature: agentRow.temperature,
-      maxTokens: agentRow.maxTokens,
-    });
+    const orderedSkills = (await this.repository.listAgentSkills(agentRow.id)).map(({ skill }) => skill);
+    const memory = await resolveMemoryConnector(this.repository, agentRow);
+    const systemPrompt = buildEffectivePrompt(agentRow, orderedSkills, await memory.load(agentRow));
+    const resolvedTools = await resolveTools(this.repository, agentRow.id);
+    const model = createChatModel(modelRow, { temperature: agentRow.temperature, maxTokens: agentRow.maxTokens });
     const runtime = createAgent({
       model,
-      tools: [],
-      systemPrompt: agentRow.instructions,
+      tools: resolvedTools.tools,
+      systemPrompt,
       middleware: [
         modelCallLimitMiddleware({ runLimit: agentRow.maxModelCalls, exitBehavior: 'error' }),
         toolCallLimitMiddleware({ runLimit: agentRow.maxToolCalls, exitBehavior: 'error' }),
       ],
     });
-    this.cache.set(agentRow.id, { key, runtime });
+    this.cache.set(agentRow.id, { key, runtime, dispose: resolvedTools.dispose });
     return runtime;
   }
 
@@ -75,14 +95,12 @@ export class AgentRuntimeManager {
     const agentRows = await db.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.enabled, true))).limit(1);
     const agentRow = agentRows[0];
     if (!agentRow) throw new Error('Agent not found or disabled');
-
     const modelRows = await db.select().from(models).where(and(eq(models.id, agentRow.modelRef), eq(models.enabled, true))).limit(1);
     const modelRow = modelRows[0];
     if (!modelRow) throw new Error('Configured model not found or disabled');
 
     const now = new Date().toISOString();
     let sessionId = requestedSessionId;
-
     if (sessionId) {
       const found = await db.select().from(sessions).where(and(eq(sessions.id, sessionId), eq(sessions.agentId, agentId))).limit(1);
       if (!found[0]) throw new Error('Session not found for this agent');
@@ -93,7 +111,6 @@ export class AgentRuntimeManager {
 
     await db.insert(messages).values({ id: randomUUID(), sessionId, role: 'user', content: userText, createdAt: now });
     await db.update(sessions).set({ updatedAt: now }).where(eq(sessions.id, sessionId));
-
     const runId = randomUUID();
     const correlationId = options.correlationId ?? randomUUID();
     await db.insert(runs).values({ id: runId, sessionId, agentId, status: 'running', startedAt: now, correlationId });
@@ -101,10 +118,10 @@ export class AgentRuntimeManager {
 
     try {
       const history = await db.select().from(messages).where(eq(messages.sessionId, sessionId)).orderBy(asc(messages.createdAt));
-      const runtime = this.getRuntime(agentRow, modelRow);
+      const runtime = await this.getRuntime(agentRow, modelRow);
       const eventStream = await runtime.streamEvents(
         { messages: history.map((message) => ({ role: message.role, content: message.content })) },
-        { version: 'v3', signal: options.signal, timeout: modelRow.timeoutMs },
+        { version: 'v3', signal: options.signal, timeout: modelRow.timeoutMs, metadata: { oacRunId: runId, oacAgentId: agentId } },
       );
 
       let assistantText = '';
@@ -133,13 +150,8 @@ export class AgentRuntimeManager {
       const completedAt = new Date().toISOString();
       await db.insert(messages).values({ id: randomUUID(), sessionId, role: 'assistant', content: assistantText, createdAt: completedAt });
       await db.update(sessions).set({ updatedAt: completedAt }).where(eq(sessions.id, sessionId));
-      await db.update(runs).set({
-        status: 'completed', completedAt,
-        inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens,
-      }).where(eq(runs.id, runId));
-      if (usage.inputTokens !== undefined || usage.outputTokens !== undefined || usage.totalTokens !== undefined) {
-        yield { version: 1, type: 'usage', ...usage };
-      }
+      await db.update(runs).set({ status: 'completed', completedAt, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens }).where(eq(runs.id, runId));
+      if (usage.inputTokens !== undefined || usage.outputTokens !== undefined || usage.totalTokens !== undefined) yield { version: 1, type: 'usage', ...usage };
       yield { version: 1, type: 'done', sessionId, runId };
     } catch (error) {
       const aborted = options.signal?.aborted;
