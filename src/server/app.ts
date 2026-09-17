@@ -15,8 +15,9 @@ import {
   memoryConnectorSchema,
   memorySchema,
   mcpServerSchema,
-  paginationSchema,
   registryImportSchema,
+  runQuerySchema,
+  sessionQuerySchema,
   skillSchema,
   toolSchema,
   updateAgentSchema,
@@ -24,6 +25,7 @@ import {
   updateMemoryConnectorSchema,
   updateMcpServerSchema,
   updateSkillSchema,
+  updateSessionSchema,
   updateToolSchema,
   updateModelSchema,
 } from "./domain/schemas.js";
@@ -33,8 +35,19 @@ import {
   discoverMcpTools,
 } from "./runtime/tool-resolver.js";
 import { testModelConnection } from "./runtime/model-factory.js";
+import { appVersion } from "./version.js";
 
 const ajv = new Ajv({ allErrors: true, strict: false });
+
+class AppError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number,
+    readonly errorCode: string,
+  ) {
+    super(message);
+  }
+}
 
 function parseJson(
   value: string,
@@ -181,6 +194,18 @@ function safeToolConfig(value: unknown): Record<string, unknown> {
   return redact(value) as Record<string, unknown>;
 }
 
+async function withSqliteTransaction<T>(work: () => Promise<T>): Promise<T> {
+  sqlite.exec("BEGIN IMMEDIATE");
+  try {
+    const result = await work();
+    sqlite.exec("COMMIT");
+    return result;
+  } catch (error) {
+    sqlite.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function buildApp() {
   const app = Fastify({ logger: true, bodyLimit: 1_048_576 });
   const runtime = new AgentRuntimeManager();
@@ -188,24 +213,40 @@ export function buildApp() {
   app.addHook("onRequest", async (request, reply) => {
     reply.header("x-correlation-id", request.id);
   });
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
+    const correlationId = request.id;
+    const sendError = (statusCode: number, code: string, message: string, details?: unknown) =>
+      reply.code(statusCode).send({ error: message, code, correlationId, ...(details ? { details } : {}) });
     if (error instanceof ZodError)
-      return reply
-        .code(400)
-        .send({ error: "Validation failed", details: error.issues });
+      return sendError(400, "VALIDATION_FAILED", "Validation failed", error.issues);
     if (error instanceof SyntaxError)
-      return reply.code(400).send({ error: "Malformed JSON payload" });
+      return sendError(400, "MALFORMED_JSON", "Malformed JSON payload");
+    if (error instanceof AppError)
+      return sendError(error.statusCode, error.errorCode, error.message);
     const code = (error as { code?: string }).code;
     if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED")
-      return reply
-        .code(503)
-        .send({ error: "Database is temporarily busy; retry the request" });
+      return sendError(503, "DATABASE_BUSY", "Database is temporarily busy; retry the request");
     if (code === "SQLITE_CONSTRAINT_FOREIGNKEY")
-      return reply
-        .code(409)
-        .send({ error: "Operation conflicts with referenced records" });
+      return sendError(409, "REFERENCE_CONFLICT", "Operation conflicts with referenced records");
     app.log.error(error);
-    return reply.code(500).send({ error: "Internal server error" });
+    return sendError(500, "INTERNAL_ERROR", "Internal server error");
+  });
+  app.addHook("onSend", async (request, reply, payload) => {
+    if (reply.statusCode < 400 || typeof payload !== "string") return payload;
+    const contentType = String(reply.getHeader("content-type") ?? "");
+    if (!contentType.includes("application/json")) return payload;
+    try {
+      const body = JSON.parse(payload) as Record<string, unknown>;
+      if (typeof body.error !== "string" || typeof body.code === "string")
+        return payload;
+      return JSON.stringify({
+        ...body,
+        code: `HTTP_${reply.statusCode}`,
+        correlationId: body.correlationId ?? request.id,
+      });
+    } catch {
+      return payload;
+    }
   });
 
   app.get("/api/health", async () => ({ status: "ok" }));
@@ -219,7 +260,7 @@ export function buildApp() {
   });
   app.get("/api/settings", async () => ({
     application: "Open Agent Console",
-    version: "0.4.0",
+    version: appVersion,
     runtime: "Node.js + LangChain",
     persistence: "SQLite",
     databaseFile: process.env.DB_FILE_NAME ?? "./data/open-agent-console.db",
@@ -318,6 +359,7 @@ export function buildApp() {
       updatedAt: now,
     };
     await repository.insertSkill(row);
+    runtime.invalidateAll();
     return reply.code(201).send(row);
   });
   app.put("/api/skills/:id", async (request, reply) => {
@@ -360,20 +402,21 @@ export function buildApp() {
       parsed.kind === "mcp" &&
       !(await repository.getMcpServer(parsed.mcpServerId!))
     )
-      throw new Error("Selected MCP server does not exist");
+      throw new AppError("Selected MCP server does not exist", 400, "MCP_SERVER_NOT_FOUND");
     try {
       ajv.compile(parsed.inputSchema);
     } catch (error) {
-      throw new Error(
+      throw new AppError(
         `Invalid input schema: ${error instanceof Error ? error.message : "schema compilation failed"}`,
-        { cause: error },
+        400,
+        "INVALID_TOOL_SCHEMA",
       );
     }
     if (parsed.kind === "http") {
       try {
         new URL(parsed.config.url as string);
       } catch {
-        throw new Error("HTTP tool URL is invalid");
+        throw new AppError("HTTP tool URL is invalid", 400, "INVALID_TOOL_URL");
       }
     }
     return parsed;
@@ -465,6 +508,7 @@ export function buildApp() {
       updatedAt: now,
     };
     await repository.insertMcpServer(row);
+    runtime.invalidateAll();
     return reply.code(201).send(mcpPayload(row));
   });
   app.put("/api/mcp-servers/:id", async (request, reply) => {
@@ -845,6 +889,7 @@ export function buildApp() {
       updatedAt: now,
     };
     await repository.insertMemory(row);
+    runtime.invalidateAgent(id);
     return reply.code(201).send(memoryPayload(row));
   });
   app.put("/api/agents/:agentId/memories/:memoryId", async (request, reply) => {
@@ -866,6 +911,7 @@ export function buildApp() {
         : current.metadataJson,
       updatedAt: new Date().toISOString(),
     });
+    runtime.invalidateAgent(agentId);
     return memoryPayload(await repository.getMemory(memoryId));
   });
   app.delete(
@@ -879,6 +925,7 @@ export function buildApp() {
       if (!current || current.agentId !== agentId)
         return reply.code(404).send({ error: "Memory not found" });
       await repository.deleteMemory(memoryId);
+      runtime.invalidateAgent(agentId);
       return reply.code(204).send();
     },
   );
@@ -981,6 +1028,31 @@ export function buildApp() {
       return id;
     };
     for (const model of input.models) {
+      model.id ??= randomUUID();
+      idOf(model.id, modelIds);
+    }
+    for (const skill of input.skills) {
+      skill.id ??= randomUUID();
+      idOf(skill.id, skillIds);
+    }
+    for (const tool of input.tools) {
+      tool.id ??= randomUUID();
+      idOf(tool.id, toolIds);
+    }
+    for (const server of input.mcpServers) {
+      server.id ??= randomUUID();
+      idOf(server.id, mcpIds);
+    }
+    for (const connector of input.memoryConnectors) {
+      connector.id ??= randomUUID();
+      idOf(connector.id, connectorIds);
+    }
+    for (const agent of input.agents) agent.id ??= randomUUID();
+    try {
+      const imported = await withSqliteTransaction(async () => {
+        let created = 0;
+        let updated = 0;
+        for (const model of input.models) {
       const id = idOf(model.id, modelIds);
       const now = new Date().toISOString();
       const row = {
@@ -999,10 +1071,17 @@ export function buildApp() {
         createdAt: now,
         updatedAt: now,
       };
-      if (await repository.getModel(id)) await repository.updateModel(id, row);
-      else await repository.insertModel(row);
-    }
-    for (const connector of input.memoryConnectors) {
+      const existing = await repository.getModel(id);
+      row.createdAt = existing?.createdAt ?? now;
+      if (existing) {
+        await repository.updateModel(id, row);
+        updated += 1;
+      } else {
+        await repository.insertModel(row);
+        created += 1;
+      }
+        }
+        for (const connector of input.memoryConnectors) {
       const id = idOf(connector.id, connectorIds);
       const now = new Date().toISOString();
       const row = {
@@ -1014,11 +1093,17 @@ export function buildApp() {
         createdAt: now,
         updatedAt: now,
       };
-      if (await repository.getMemoryConnector(id))
+      const existing = await repository.getMemoryConnector(id);
+      row.createdAt = existing?.createdAt ?? now;
+      if (existing) {
         await repository.updateMemoryConnector(id, row);
-      else await repository.insertMemoryConnector(row);
-    }
-    for (const skill of input.skills) {
+        updated += 1;
+      } else {
+        await repository.insertMemoryConnector(row);
+        created += 1;
+      }
+        }
+        for (const skill of input.skills) {
       const id = idOf(skill.id, skillIds);
       const now = new Date().toISOString();
       const row = {
@@ -1030,10 +1115,17 @@ export function buildApp() {
         createdAt: now,
         updatedAt: now,
       };
-      if (await repository.getSkill(id)) await repository.updateSkill(id, row);
-      else await repository.insertSkill(row);
-    }
-    for (const server of input.mcpServers) {
+      const existing = await repository.getSkill(id);
+      row.createdAt = existing?.createdAt ?? now;
+      if (existing) {
+        await repository.updateSkill(id, row);
+        updated += 1;
+      } else {
+        await repository.insertSkill(row);
+        created += 1;
+      }
+        }
+        for (const server of input.mcpServers) {
       const id = idOf(server.id, mcpIds);
       const now = new Date().toISOString();
       const row = {
@@ -1045,11 +1137,17 @@ export function buildApp() {
         createdAt: now,
         updatedAt: now,
       };
-      if (await repository.getMcpServer(id))
+      const existing = await repository.getMcpServer(id);
+      row.createdAt = existing?.createdAt ?? now;
+      if (existing) {
         await repository.updateMcpServer(id, row);
-      else await repository.insertMcpServer(row);
-    }
-    for (const tool of input.tools) {
+        updated += 1;
+      } else {
+        await repository.insertMcpServer(row);
+        created += 1;
+      }
+        }
+        for (const tool of input.tools) {
       const id = idOf(tool.id, toolIds);
       const normalized = {
         ...tool,
@@ -1072,10 +1170,17 @@ export function buildApp() {
         createdAt: now,
         updatedAt: now,
       };
-      if (await repository.getTool(id)) await repository.updateTool(id, row);
-      else await repository.insertTool(row);
-    }
-    for (const agent of input.agents) {
+      const existing = await repository.getTool(id);
+      row.createdAt = existing?.createdAt ?? now;
+      if (existing) {
+        await repository.updateTool(id, row);
+        updated += 1;
+      } else {
+        await repository.insertTool(row);
+        created += 1;
+      }
+        }
+        for (const agent of input.agents) {
       const modelRef = modelIds.get(agent.modelRef) ?? agent.modelRef;
       const memoryConnectorId = agent.memoryConnectorId
         ? (connectorIds.get(agent.memoryConnectorId) ?? agent.memoryConnectorId)
@@ -1113,33 +1218,74 @@ export function buildApp() {
         createdAt: now,
         updatedAt: now,
       };
-      if (await repository.getAgent(id)) await repository.updateAgent(id, row);
-      else await repository.insertAgent(row);
+      const existing = await repository.getAgent(id);
+      row.createdAt = existing?.createdAt ?? now;
+      if (existing) {
+        await repository.updateAgent(id, row);
+        updated += 1;
+      } else {
+        await repository.insertAgent(row);
+        created += 1;
+      }
       await repository.replaceAgentSkills(id, skillList);
       await repository.replaceAgentTools(id, toolList);
-    }
-    runtime.invalidateAll();
-    return reply
-      .code(202)
-      .send({
-        ok: true,
-        imported: {
-          models: input.models.length,
-          skills: input.skills.length,
-          tools: input.tools.length,
-          mcpServers: input.mcpServers.length,
-          memoryConnectors: input.memoryConnectors.length,
-          agents: input.agents.length,
-        },
+        }
+        return { created, updated, skipped: 0 };
       });
+      runtime.invalidateAll();
+      return reply
+        .code(202)
+        .send({
+          ok: true,
+          imported: {
+            models: input.models.length,
+            skills: input.skills.length,
+            tools: input.tools.length,
+            mcpServers: input.mcpServers.length,
+            memoryConnectors: input.memoryConnectors.length,
+            agents: input.agents.length,
+            ...imported,
+          },
+        });
+    } catch (error) {
+      return reply.code(400).send({
+        error: error instanceof Error ? error.message : "Registry import failed",
+        code: "REGISTRY_IMPORT_REJECTED",
+        correlationId: request.id,
+      });
+    }
   });
 
   app.get("/api/sessions", async (request) => {
-    const page = paginationSchema.parse(request.query);
+    const page = sessionQuerySchema.parse(request.query);
+    const [items, total] = await Promise.all([
+      repository.listSessions(page.offset, page.limit, page.agentId),
+      repository.countSessions(page.agentId),
+    ]);
     return {
-      items: await repository.listSessions(page.offset, page.limit),
+      items,
+      total,
+      hasMore: page.offset + items.length < total,
       ...page,
     };
+  });
+  app.patch("/api/sessions/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!(await repository.getSession(id)))
+      return reply.code(404).send({ error: "Session not found" });
+    const input = updateSessionSchema.parse(request.body);
+    await repository.updateSession(id, {
+      title: input.title,
+      updatedAt: new Date().toISOString(),
+    });
+    return { ok: true };
+  });
+  app.delete("/api/sessions/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!(await repository.getSession(id)))
+      return reply.code(404).send({ error: "Session not found" });
+    await repository.deleteSession(id);
+    return reply.code(204).send();
   });
   app.get("/api/sessions/:id/messages", async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -1148,10 +1294,29 @@ export function buildApp() {
     return repository.listMessages(id);
   });
   app.get("/api/runs", async (request) => {
-    const page = paginationSchema.parse(request.query);
+    const page = runQuerySchema.parse(request.query);
+    const filters = { agentId: page.agentId, status: page.status };
+    const [items, total] = await Promise.all([
+      repository.listRuns(page.offset, page.limit, filters),
+      repository.countRuns(filters),
+    ]);
     return {
-      items: await repository.listRuns(page.offset, page.limit),
+      items,
+      total,
+      hasMore: page.offset + items.length < total,
       ...page,
+    };
+  });
+  app.get("/api/runs/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const run = await repository.getRun(id);
+    if (!run) return reply.code(404).send({ error: "Run not found" });
+    return {
+      ...run,
+      durationMs: run.completedAt
+        ? Math.max(0, Date.parse(run.completedAt) - Date.parse(run.startedAt))
+        : null,
+      toolCalls: await repository.listToolCalls(id),
     };
   });
   app.post("/api/agents/:id/chat", async (request, reply) => {
@@ -1183,7 +1348,7 @@ export function buildApp() {
       const message =
         error instanceof Error ? error.message : "Agent execution failed";
       reply.raw.write(
-        `event: error\ndata: ${JSON.stringify({ version: 1, type: "error", message })}\n\n`,
+        `event: error\ndata: ${JSON.stringify({ version: 1, type: "error", message, code: "AGENT_EXECUTION_FAILED", correlationId: request.id })}\n\n`,
       );
     } finally {
       reply.raw.end();

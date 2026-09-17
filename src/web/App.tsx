@@ -98,6 +98,21 @@ type Run = {
   outputTokens?: number | null;
   totalTokens?: number | null;
   correlationId?: string | null;
+  completedAt?: string | null;
+  contextTruncated?: boolean;
+  durationMs?: number | null;
+};
+type RunDetail = Run & {
+  toolCalls: Array<{
+    id: string;
+    toolName: string;
+    status: string;
+    inputJson: string;
+    output?: string | null;
+    error?: string | null;
+    startedAt: string;
+    completedAt?: string | null;
+  }>;
 };
 type Message = {
   id?: string;
@@ -142,6 +157,7 @@ const capabilities = [
   "audio",
   "structured-output",
 ];
+const appVersion = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "dev";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -198,6 +214,8 @@ export function App() {
   const [connectors, setConnectors] = useState<MemoryConnector[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [selectedRun, setSelectedRun] = useState<RunDetail | null>(null);
+  const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [editingSkill, setEditingSkill] = useState<Skill | null>(null);
@@ -598,6 +616,22 @@ export function App() {
       setUsage(undefined);
     });
   }
+  async function renameSession(title: string) {
+    if (!editingSession) return;
+    await json(`/api/sessions/${editingSession.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    setEditingSession(null);
+    setNotice("Session renamed.");
+    await refresh();
+  }
+  async function openRun(row: Run) {
+    await run(async () => {
+      setSelectedRun(await json<RunDetail>(`/api/runs/${row.id}`));
+    });
+  }
   function closeChat() {
     abortRef.current?.abort();
     setChatAgent(null);
@@ -706,7 +740,7 @@ export function App() {
         </nav>
         <div className="sidebar-foot">
           Single runtime · SQLite · LangChain
-          <span>v0.4.0 · Ready for local control</span>
+          <span>v{appVersion} · Ready for local control</span>
         </div>
       </aside>
       <main>
@@ -917,9 +951,24 @@ export function App() {
                 sessions={sessions}
                 agents={agentNames}
                 onOpen={(session) => void reopenSession(session)}
+                onRename={setEditingSession}
+                onDelete={(session) =>
+                  requestDelete(
+                    "Delete session",
+                    `Delete “${session.title || "Untitled session"}”? Its messages and run history will also be deleted.`,
+                    () => deleteById("sessions", session.id),
+                  )
+                }
               />
             )}
-            {page === "runs" && <RunsPage runs={runs} agents={agentNames} />}
+            {page === "runs" && (
+              <RunsPage
+                runs={runs}
+                agents={agentNames}
+                selectedRun={selectedRun}
+                onOpen={(run) => void openRun(run)}
+              />
+            )}
             {page === "settings" && (
               <SettingsPage
                 onExport={() => void run(exportRegistry)}
@@ -954,6 +1003,13 @@ export function App() {
               setConfirm(null);
             })
           }
+        />
+      )}
+      {editingSession && (
+        <SessionRenameDialog
+          session={editingSession}
+          onCancel={() => setEditingSession(null)}
+          onSave={(title) => void run(() => renameSession(title))}
         />
       )}
     </div>
@@ -2265,10 +2321,14 @@ function SessionsPage({
   sessions,
   agents,
   onOpen,
+  onRename,
+  onDelete,
 }: {
   sessions: Session[];
   agents: Map<string, string>;
   onOpen: (session: Session) => void;
+  onRename: (session: Session) => void;
+  onDelete: (session: Session) => void;
 }) {
   return (
     <section className="panel">
@@ -2296,6 +2356,12 @@ function SessionsPage({
               <button type="button" onClick={() => onOpen(session)}>
                 Open
               </button>
+              <button type="button" onClick={() => onRename(session)}>
+                Rename
+              </button>
+              <button type="button" className="danger" onClick={() => onDelete(session)}>
+                Delete
+              </button>
             </div>
           </div>
         ))
@@ -2306,9 +2372,13 @@ function SessionsPage({
 function RunsPage({
   runs,
   agents,
+  selectedRun,
+  onOpen,
 }: {
   runs: Run[];
   agents: Map<string, string>;
+  selectedRun: RunDetail | null;
+  onOpen: (run: Run) => void;
 }) {
   return (
     <section className="panel">
@@ -2335,9 +2405,46 @@ function RunsPage({
               </span>
               {run.correlationId && <code>{run.correlationId}</code>}
             </div>
-            <span className={`pill ${run.status}`}>{run.status}</span>
+            <div className="actions">
+              <span className={`pill ${run.status}`}>{run.status}</span>
+              <button type="button" onClick={() => onOpen(run)}>
+                Inspect
+              </button>
+            </div>
           </div>
         ))
+      )}
+      {selectedRun && (
+        <div className="run-detail" aria-live="polite">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">RUN DETAIL</p>
+              <h2>{agents.get(selectedRun.agentId) ?? selectedRun.agentId}</h2>
+            </div>
+            <span className={`pill ${selectedRun.status}`}>{selectedRun.status}</span>
+          </div>
+          <div className="run-facts">
+            <span>Started {formatDate(selectedRun.startedAt)}</span>
+            <span>{selectedRun.durationMs == null ? "Still running" : `${selectedRun.durationMs} ms`}</span>
+            {selectedRun.totalTokens != null && <span>{selectedRun.totalTokens} tokens</span>}
+            {selectedRun.contextTruncated && <span className="warning-text">Context bounded</span>}
+          </div>
+          {selectedRun.correlationId && <code>{selectedRun.correlationId}</code>}
+          {selectedRun.error && <p className="error-text">{selectedRun.error}</p>}
+          <div className="tool-call-list">
+            <strong>Tool calls</strong>
+            {selectedRun.toolCalls.length === 0 ? (
+              <span className="muted-inline">No tool calls recorded.</span>
+            ) : selectedRun.toolCalls.map((call) => (
+              <div className="tool-call" key={call.id}>
+                <span><strong>{call.toolName}</strong> · {call.status}</span>
+                <code>{call.inputJson}</code>
+                {call.output && <pre>{call.output}</pre>}
+                {call.error && <p className="error-text">{call.error}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </section>
   );
@@ -2375,7 +2482,7 @@ function SettingsPage({
         <div className="settings-list">
           <div>
             <span>Application</span>
-            <strong>Open Agent Console v0.4.0</strong>
+            <strong>Open Agent Console v{appVersion}</strong>
           </div>
           <div>
             <span>Persistence</span>
@@ -2532,6 +2639,57 @@ function ConfirmDialog({
     </div>
   );
 }
+
+function SessionRenameDialog({
+  session,
+  onCancel,
+  onSave,
+}: {
+  session: Session;
+  onCancel: () => void;
+  onSave: (title: string) => void;
+}) {
+  const [title, setTitle] = useState(session.title ?? "");
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => inputRef.current?.focus(), []);
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <form
+        className="modal form"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rename-session-title"
+        noValidate
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (title.trim()) onSave(title.trim());
+        }}
+      >
+        <p className="eyebrow">SESSION LABEL</p>
+        <h2 id="rename-session-title">Rename session</h2>
+        <label className="field" htmlFor="session-title">
+          <span>Title</span>
+          <input
+            ref={inputRef}
+            id="session-title"
+            value={title}
+            maxLength={200}
+            onChange={(event) => setTitle(event.target.value)}
+          />
+        </label>
+        <div className="form-actions">
+          <button type="button" className="secondary" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="submit" className="primary" disabled={!title.trim()}>
+            Save title
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function FormHeading({
   eyebrow,
   title,

@@ -19,7 +19,9 @@ class SqliteMemoryConnector implements MemoryConnectorRuntime {
   readonly type = 'sqlite';
   constructor(private readonly repository: RegistryRepository, private readonly connectorId: string) {}
   load(agent: AgentRecord): Promise<MemoryRecord[]> {
-    return this.repository.listMemories(agent.id, this.connectorId);
+    const configured = Number(process.env.OAC_MAX_MEMORY_ENTRIES);
+    const limit = Number.isFinite(configured) ? Math.min(Math.max(Math.floor(configured), 0), 10_000) : 100;
+    return this.repository.listMemories(agent.id, this.connectorId, limit);
   }
 }
 

@@ -119,6 +119,7 @@ export const runs = sqliteTable('runs', {
   outputTokens: integer('output_tokens'),
   totalTokens: integer('total_tokens'),
   correlationId: text('correlation_id'),
+  contextTruncated: integer('context_truncated', { mode: 'boolean' }).notNull().default(false),
 });
 
 export const toolCalls = sqliteTable('tool_calls', {

@@ -1,4 +1,4 @@
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, count, desc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "./index.js";
 import {
@@ -224,12 +224,13 @@ export class RegistryRepository {
       .delete(memoryConnectors)
       .where(eq(memoryConnectors.id, id));
   }
-  listMemories(agentId: string, connectorId: string) {
+  listMemories(agentId: string, connectorId: string, limit = 100) {
     return this.database
       .select()
       .from(memories)
       .where(eq(memories.agentId, agentId))
       .orderBy(desc(memories.updatedAt))
+      .limit(limit)
       .then((rows) => rows.filter((row) => row.connectorId === connectorId));
   }
   getMemory(id: string) {
@@ -256,13 +257,21 @@ export class RegistryRepository {
     return this.database.delete(memories).where(eq(memories.id, id));
   }
 
-  listSessions(offset: number, limit: number) {
+  listSessions(offset: number, limit: number, agentId?: string) {
     return this.database
       .select()
       .from(sessions)
+      .where(agentId ? eq(sessions.agentId, agentId) : undefined)
       .orderBy(desc(sessions.updatedAt))
       .limit(limit)
       .offset(offset);
+  }
+  countSessions(agentId?: string) {
+    return this.database
+      .select({ total: count() })
+      .from(sessions)
+      .where(agentId ? eq(sessions.agentId, agentId) : undefined)
+      .then((rows) => Number(rows[0]?.total ?? 0));
   }
   getSession(id: string) {
     return this.database
@@ -282,17 +291,45 @@ export class RegistryRepository {
   insertSession(row: typeof sessions.$inferInsert) {
     return this.database.insert(sessions).values(row);
   }
+  updateSession(id: string, patch: Partial<typeof sessions.$inferInsert>) {
+    return this.database.update(sessions).set(patch).where(eq(sessions.id, id));
+  }
+  deleteSession(id: string) {
+    return this.database.delete(sessions).where(eq(sessions.id, id));
+  }
   insertMessage(row: typeof messages.$inferInsert) {
     return this.database.insert(messages).values(row);
   }
 
-  listRuns(offset: number, limit: number) {
+  listRuns(offset: number, limit: number, filters: { agentId?: string; status?: string } = {}) {
+    const condition = filters.agentId && filters.status
+      ? and(eq(runs.agentId, filters.agentId), eq(runs.status, filters.status))
+      : filters.agentId
+        ? eq(runs.agentId, filters.agentId)
+        : filters.status
+          ? eq(runs.status, filters.status)
+          : undefined;
     return this.database
       .select()
       .from(runs)
+      .where(condition)
       .orderBy(desc(runs.startedAt))
       .limit(limit)
       .offset(offset);
+  }
+  countRuns(filters: { agentId?: string; status?: string } = {}) {
+    const condition = filters.agentId && filters.status
+      ? and(eq(runs.agentId, filters.agentId), eq(runs.status, filters.status))
+      : filters.agentId
+        ? eq(runs.agentId, filters.agentId)
+        : filters.status
+          ? eq(runs.status, filters.status)
+          : undefined;
+    return this.database
+      .select({ total: count() })
+      .from(runs)
+      .where(condition)
+      .then((rows) => Number(rows[0]?.total ?? 0));
   }
   insertRun(row: typeof runs.$inferInsert) {
     return this.database.insert(runs).values(row);

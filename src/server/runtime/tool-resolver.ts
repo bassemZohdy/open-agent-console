@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { Agent } from "undici";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { MultiServerMCPClient } from "@langchain/mcp-adapters";
 import { Ajv } from "ajv";
@@ -157,6 +158,8 @@ function isPrivateAddress(address: string): boolean {
   }
   if (isIP(address) === 6) {
     const normalized = address.toLowerCase();
+    const mappedIpv4 = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mappedIpv4?.[1]) return isPrivateAddress(mappedIpv4[1]);
     return (
       normalized === "::" ||
       normalized === "::1" ||
@@ -176,7 +179,9 @@ function isPrivateAddress(address: string): boolean {
   return true;
 }
 
-export async function assertPublicHttpUrl(rawUrl: string): Promise<URL> {
+type PublicHttpTarget = { url: URL; address: string; family: 4 | 6 };
+
+async function resolvePublicHttpTarget(rawUrl: string): Promise<PublicHttpTarget> {
   const url = new URL(rawUrl);
   if (url.protocol !== "http:" && url.protocol !== "https:")
     throw new Error("Only HTTP and HTTPS URLs are allowed");
@@ -190,7 +195,29 @@ export async function assertPublicHttpUrl(rawUrl: string): Promise<URL> {
     throw new Error(
       "HTTP tool target resolves to a private or restricted network address",
     );
-  return url;
+  const selected = addresses[0];
+  if (!selected || (selected.family !== 4 && selected.family !== 6))
+    throw new Error("HTTP tool target has no supported public address");
+  return { url, address: selected.address, family: selected.family };
+}
+
+export async function assertPublicHttpUrl(rawUrl: string): Promise<URL> {
+  return (await resolvePublicHttpTarget(rawUrl)).url;
+}
+
+async function fetchPinned<T>(target: PublicHttpTarget, init: RequestInit, consume: (response: Response) => Promise<T>): Promise<T> {
+  const dispatcher = new Agent({
+    connect: {
+      lookup: (_hostname: string, _options: unknown, callback: (error: NodeJS.ErrnoException | null, address: string, family: number) => void) =>
+        callback(null, target.address, target.family),
+    } as never,
+  });
+  try {
+    const response = await fetch(target.url, { ...init, dispatcher } as RequestInit & { dispatcher: Agent });
+    return await consume(response);
+  } finally {
+    await dispatcher.close();
+  }
 }
 
 function resolveHeaders(raw: unknown): Record<string, string> {
@@ -287,7 +314,8 @@ function createHttpTool(record: ToolRecord): ResolvedTool {
       const rawUrl = config.url;
       if (typeof rawUrl !== "string")
         throw new Error("HTTP tool URL is not configured");
-      const url = await assertPublicHttpUrl(rawUrl);
+      const target = await resolvePublicHttpTarget(rawUrl);
+      const url = target.url;
       const method =
         typeof config.method === "string" ? config.method.toUpperCase() : "GET";
       if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method))
@@ -309,14 +337,14 @@ function createHttpTool(record: ToolRecord): ResolvedTool {
       } else {
         headers["content-type"] ??= "application/json";
       }
-      const response = await fetch(url, {
+      const response = await fetchPinned(target, {
         method,
         headers,
         body: method === "GET" ? undefined : JSON.stringify(bodyInput),
         signal: AbortSignal.timeout(timeoutMs),
         redirect: "error",
-      });
-      const text = await response.text();
+      }, async (result) => ({ ok: result.ok, status: result.status, text: await result.text() }));
+      const text = response.text;
       if (!response.ok)
         throw new Error(`HTTP ${response.status}: ${text.slice(0, 1000)}`);
       return text.length > maxOutputChars

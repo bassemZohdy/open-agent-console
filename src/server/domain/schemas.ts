@@ -73,6 +73,34 @@ export const skillSchema = z.object({
 export const updateSkillSchema = skillSchema.partial();
 
 const jsonObjectSchema = z.record(z.string(), z.unknown());
+
+const secretKeyPattern = /(?:api[-_]?key|authorization|credential|password|secret|token)/i;
+
+function rejectPlainSecrets(value: unknown, path: (string | number)[], ctx: z.RefinementCtx) {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => rejectPlainSecrets(entry, [...path, index], ctx));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const nextPath = [...path, key];
+    if (secretKeyPattern.test(key)) {
+      const envReference =
+        entry &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        typeof (entry as { env?: unknown }).env === "string";
+      if (!envReference && typeof entry === "string" && entry.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: nextPath,
+          message: "Secret-like values must reference an environment variable",
+        });
+      }
+    }
+    rejectPlainSecrets(entry, nextPath, ctx);
+  }
+}
 export const toolKindSchema = z.enum([
   "builtin-calculator",
   "builtin-datetime",
@@ -93,6 +121,7 @@ const toolBaseSchema = z.object({
   enabled: z.boolean().default(true),
 });
 export const toolSchema = toolBaseSchema.superRefine((value, ctx) => {
+  rejectPlainSecrets(value.config, ["config"], ctx);
   if (value.kind === "http") {
     const url = value.config.url;
     if (typeof url !== "string" || !/^https?:\/\//i.test(url))
@@ -136,9 +165,11 @@ export const toolSchema = toolBaseSchema.superRefine((value, ctx) => {
       message: "Only MCP tools may reference an MCP server",
     });
 });
-export const updateToolSchema = toolBaseSchema.partial();
+export const updateToolSchema = toolBaseSchema.partial().superRefine((value, ctx) => {
+  rejectPlainSecrets(value.config, ["config"], ctx);
+});
 
-export const mcpServerSchema = z.object({
+const mcpServerBaseSchema = z.object({
   name: z.string().min(1).max(120),
   url: z
     .string()
@@ -158,7 +189,12 @@ export const mcpServerSchema = z.object({
     .default({}),
   enabled: z.boolean().default(true),
 });
-export const updateMcpServerSchema = mcpServerSchema.partial();
+export const mcpServerSchema = mcpServerBaseSchema.superRefine((value, ctx) => {
+  rejectPlainSecrets(value.headers, ["headers"], ctx);
+});
+export const updateMcpServerSchema = mcpServerBaseSchema.partial().superRefine((value, ctx) => {
+  rejectPlainSecrets(value.headers, ["headers"], ctx);
+});
 
 export const memoryConnectorSchema = z.object({
   name: z.string().min(1).max(120),
@@ -216,7 +252,19 @@ export const chatRequestSchema = z.object({
   sessionId: z.string().uuid().optional(),
 });
 
+export const updateSessionSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+});
+
 export const paginationSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(25),
+});
+
+export const sessionQuerySchema = paginationSchema.extend({
+  agentId: z.string().uuid().optional(),
+});
+export const runQuerySchema = paginationSchema.extend({
+  agentId: z.string().uuid().optional(),
+  status: z.enum(["running", "completed", "failed", "cancelled"]).optional(),
 });
