@@ -69,6 +69,28 @@ describe("model to agent to chat integration", () => {
       expect(chat.statusCode).toBe(200);
       expect(chat.body).toContain("local fake response");
       expect(chat.body).toContain("event: done");
+      const sessions = await app.inject({ method: "GET", url: "/api/sessions?limit=10" });
+      expect(sessions.statusCode).toBe(200);
+      const sessionRows = sessions.json() as { items: Array<{ id: string; agentId: string }> };
+      const session = sessionRows.items.find((row) => row.agentId === agent.id);
+      expect(session).toBeDefined();
+      const runs = await app.inject({ method: "GET", url: "/api/runs?limit=10" });
+      expect(runs.statusCode).toBe(200);
+      const runRows = runs.json() as { items: Array<{ id: string; agentId: string }>; total: number };
+      expect(runRows.total).toBeGreaterThanOrEqual(1);
+      const run = runRows.items.find((row) => row.agentId === agent.id);
+      expect(run).toBeDefined();
+      const runDetail = await app.inject({ method: "GET", url: `/api/runs/${run?.id}` });
+      expect(runDetail.statusCode).toBe(200);
+      expect(runDetail.json()).toMatchObject({ status: "completed", toolCalls: [] });
+      const rename = await app.inject({
+        method: "PATCH",
+        url: `/api/sessions/${session?.id}`,
+        payload: { title: "Renamed integration session" },
+      });
+      expect(rename.statusCode).toBe(200);
+      const deleted = await app.inject({ method: "DELETE", url: `/api/sessions/${session?.id}` });
+      expect(deleted.statusCode).toBe(204);
       await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
       await app.inject({ method: "DELETE", url: `/api/models/${model.id}` });
     } finally {

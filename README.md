@@ -75,6 +75,16 @@ Open `http://localhost:3000`.
 
 The application stores its SQLite database at `/data/open-agent-console.db` by default and applies versioned migrations automatically on startup.
 
+The control panel is intentionally single-user and unauthenticated. Bind it to
+localhost for personal use, or put it behind an authenticated TLS reverse proxy
+before exposing it on a network. Never expose `/api` directly to an untrusted
+network.
+
+Runtime context is bounded by `OAC_MAX_HISTORY_MESSAGES`,
+`OAC_MAX_HISTORY_CHARS`, `OAC_MAX_MEMORY_ENTRIES` and
+`OAC_MAX_CONTEXT_CHARS`. The server keeps the newest conversation turns and
+marks runs whose context was truncated with `contextTruncated: true`.
+
 ## Docker Hub CI publishing
 
 Pull requests and pushes to `main` run the typecheck, lint, test, build and Docker verification steps. A successful push to `main` also publishes:
@@ -158,8 +168,8 @@ The currently exposed API includes:
 | Models | `GET/POST /api/models`, `PUT/DELETE /api/models/:id`, `POST /api/models/:id/test` |
 | Agents | `GET/POST /api/agents`, `PUT/DELETE /api/agents/:id`, `PATCH /api/agents/:id/enabled`, `POST /api/agents/:id/duplicate` |
 | Chat | `POST /api/agents/:id/chat` using Server-Sent Events |
-| Sessions | `GET /api/sessions`, `GET /api/sessions/:id/messages` |
-| Runs | `GET /api/runs` |
+| Sessions | `GET/PATCH/DELETE /api/sessions/:id`, `GET /api/sessions`, `GET /api/sessions/:id/messages` |
+| Runs | `GET /api/runs`, `GET /api/runs/:id` (including ordered tool calls) |
 
 All registry tables are available through validated HTTP APIs and the control panel.
 
@@ -182,8 +192,18 @@ GET /api/ready
 - HTTP tool URLs require HTTP(S), reject embedded credentials and reject DNS results in private/restricted ranges
 - HTTP tool requests have bounded timeouts/output and do not follow redirects
 - MCP header credentials can be referenced through environment variables
+- Secret-like HTTP/MCP configuration values must use environment-variable references; raw authorization, token, key, password and credential values are rejected
 - assistant Markdown does not enable raw HTML and is sanitized
 - arbitrary JavaScript execution from the UI is not supported
+
+## Backup and recovery
+
+Stop the container before copying the `/data` volume so the SQLite WAL is
+included consistently. Keep the database file and its `-wal`/`-shm` companions
+together, restore them into the same `/data` volume, and let startup apply the
+versioned migrations. Registry export is a configuration transfer mechanism,
+not a complete backup: sessions, runs and long-term memories are intentionally
+excluded.
 
 HTTP/MCP tools are configurable from the control panel. Runtime exposure remains subject to JSON Schema validation, public DNS checks, bounded timeouts/output, redirect rejection and environment-backed headers.
 

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { createAgent, modelCallLimitMiddleware, toolCallLimitMiddleware } from 'langchain';
 import type { InferSelectModel } from 'drizzle-orm';
 import { db } from '../db/index.js';
@@ -23,7 +23,7 @@ export type StreamEvent =
   | { version: 1; type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number }
   | { version: 1; type: 'done'; sessionId: string; runId: string }
   | { version: 1; type: 'cancelled'; sessionId: string; runId: string }
-  | { version: 1; type: 'error'; message: string };
+  | { version: 1; type: 'error'; message: string; code?: string; correlationId?: string };
 
 function numeric(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
@@ -38,8 +38,15 @@ function normalizeUsage(value: unknown): Usage {
   return { inputTokens, outputTokens, totalTokens };
 }
 
+function configuredLimit(name: string, fallback: number, minimum: number, maximum: number): number {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.floor(parsed), minimum), maximum);
+}
+
 export class AgentRuntimeManager {
   private readonly cache = new Map<string, CachedRuntime>();
+  private readonly pending = new Map<string, Promise<Runtime>>();
   private readonly repository = new RegistryRepository();
 
   private disposeEntry(agentId: string): void {
@@ -54,6 +61,29 @@ export class AgentRuntimeManager {
     for (const agentId of this.cache.keys()) this.disposeEntry(agentId);
   }
 
+  private async dependencyKey(agentRow: AgentRecord, modelRow: ModelRecord): Promise<string> {
+    const orderedSkills = await this.repository.listAgentSkills(agentRow.id);
+    const orderedTools = await this.repository.listAgentTools(agentRow.id);
+    const mcpServerIds = orderedTools
+      .map(({ tool }) => tool.mcpServerId)
+      .filter((id): id is string => Boolean(id));
+    const mcpServers = await Promise.all(
+      [...new Set(mcpServerIds)].map((id) => this.repository.getMcpServer(id)),
+    );
+    const memories = agentRow.memoryConnectorId
+      ? await this.repository.listMemories(agentRow.id, agentRow.memoryConnectorId)
+      : [];
+    return JSON.stringify({
+      agent: agentRow.updatedAt,
+      model: modelRow.updatedAt,
+      skills: orderedSkills.map(({ skill, position }) => [skill.id, skill.updatedAt, skill.enabled, position]),
+      tools: orderedTools.map(({ tool, position }) => [tool.id, tool.updatedAt, tool.enabled, position]),
+      mcpServers: mcpServers.map((server) => server && [server.id, server.updatedAt, server.enabled]),
+      memoryConnector: agentRow.memoryConnectorId,
+      memories: memories.map((memory) => [memory.id, memory.updatedAt]),
+    });
+  }
+
   async effectivePrompt(agentId: string): Promise<string> {
     const agentRow = await this.repository.getAgent(agentId);
     if (!agentRow) throw new Error('Agent not found');
@@ -63,27 +93,38 @@ export class AgentRuntimeManager {
   }
 
   private async getRuntime(agentRow: AgentRecord, modelRow: ModelRecord): Promise<Runtime> {
-    const key = `${agentRow.updatedAt}:${modelRow.updatedAt}`;
+    const key = await this.dependencyKey(agentRow, modelRow);
     const cached = this.cache.get(agentRow.id);
     if (cached?.key === key) return cached.runtime;
     if (cached) this.disposeEntry(agentRow.id);
 
-    const orderedSkills = (await this.repository.listAgentSkills(agentRow.id)).map(({ skill }) => skill);
-    const memory = await resolveMemoryConnector(this.repository, agentRow);
-    const systemPrompt = buildEffectivePrompt(agentRow, orderedSkills, await memory.load(agentRow));
-    const resolvedTools = await resolveTools(this.repository, agentRow.id);
-    const model = createChatModel(modelRow, { temperature: agentRow.temperature, maxTokens: agentRow.maxTokens });
-    const runtime = createAgent({
-      model,
-      tools: resolvedTools.tools,
-      systemPrompt,
-      middleware: [
-        modelCallLimitMiddleware({ runLimit: agentRow.maxModelCalls, exitBehavior: 'error' }),
-        toolCallLimitMiddleware({ runLimit: agentRow.maxToolCalls, exitBehavior: 'error' }),
-      ],
-    });
-    this.cache.set(agentRow.id, { key, runtime, dispose: resolvedTools.dispose });
-    return runtime;
+    const pending = this.pending.get(agentRow.id);
+    if (pending) return pending;
+
+    const build = (async () => {
+      const orderedSkills = (await this.repository.listAgentSkills(agentRow.id)).map(({ skill }) => skill);
+      const memory = await resolveMemoryConnector(this.repository, agentRow);
+      const systemPrompt = buildEffectivePrompt(agentRow, orderedSkills, await memory.load(agentRow));
+      const resolvedTools = await resolveTools(this.repository, agentRow.id);
+      const model = createChatModel(modelRow, { temperature: agentRow.temperature, maxTokens: agentRow.maxTokens });
+      const runtime = createAgent({
+        model,
+        tools: resolvedTools.tools,
+        systemPrompt,
+        middleware: [
+          modelCallLimitMiddleware({ runLimit: agentRow.maxModelCalls, exitBehavior: 'error' }),
+          toolCallLimitMiddleware({ runLimit: agentRow.maxToolCalls, exitBehavior: 'error' }),
+        ],
+      });
+      this.cache.set(agentRow.id, { key, runtime, dispose: resolvedTools.dispose });
+      return runtime;
+    })();
+    this.pending.set(agentRow.id, build);
+    try {
+      return await build;
+    } finally {
+      if (this.pending.get(agentRow.id) === build) this.pending.delete(agentRow.id);
+    }
   }
 
   async *stream(
@@ -117,10 +158,38 @@ export class AgentRuntimeManager {
     yield { version: 1, type: 'session', sessionId, runId, correlationId };
 
     try {
-      const history = await db.select().from(messages).where(eq(messages.sessionId, sessionId)).orderBy(asc(messages.createdAt));
+      const maxHistoryMessages = configuredLimit('OAC_MAX_HISTORY_MESSAGES', 80, 2, 10_000);
+      const maxHistoryChars = configuredLimit('OAC_MAX_HISTORY_CHARS', 120_000, 2_000, 1_000_000);
+      const recentHistory = await db.select().from(messages).where(eq(messages.sessionId, sessionId)).orderBy(desc(messages.createdAt)).limit(maxHistoryMessages);
+      const history = recentHistory.reverse();
+      let historyChars = 0;
+      const boundedHistory = [];
+      let contextTruncated = recentHistory.length >= maxHistoryMessages;
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        const message = history[index];
+        if (!message) continue;
+        const nextChars = historyChars + message.content.length;
+        if (boundedHistory.length > 0 && nextChars > maxHistoryChars) {
+          contextTruncated = true;
+          break;
+        }
+        boundedHistory.unshift(message);
+        historyChars = nextChars;
+      }
+      if (boundedHistory.length === 0 && history.length > 0) {
+        const latest = history[history.length - 1];
+        if (latest) {
+          boundedHistory.push({
+            ...latest,
+            content: latest.content.slice(0, maxHistoryChars),
+          });
+          contextTruncated = true;
+        }
+      }
+      await db.update(runs).set({ contextTruncated }).where(eq(runs.id, runId));
       const runtime = await this.getRuntime(agentRow, modelRow);
       const eventStream = await runtime.streamEvents(
-        { messages: history.map((message) => ({ role: message.role, content: message.content })) },
+        { messages: boundedHistory.map((message) => ({ role: message.role, content: message.content })) },
         { version: 'v3', signal: options.signal, timeout: modelRow.timeoutMs, metadata: { oacRunId: runId, oacAgentId: agentId } },
       );
 
@@ -158,7 +227,7 @@ export class AgentRuntimeManager {
       const message = error instanceof Error ? error.message : 'Unknown agent runtime error';
       await db.update(runs).set({ status: aborted ? 'cancelled' : 'failed', completedAt: new Date().toISOString(), error: aborted ? null : message }).where(eq(runs.id, runId));
       if (aborted) yield { version: 1, type: 'cancelled', sessionId, runId };
-      else yield { version: 1, type: 'error', message };
+      else yield { version: 1, type: 'error', message, code: 'AGENT_EXECUTION_FAILED', correlationId };
     }
   }
 }

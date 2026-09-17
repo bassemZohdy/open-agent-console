@@ -49,7 +49,7 @@ describe("M5-M8 management APIs", () => {
         payload: {
           name: `MCP ${suffix}`,
           url: "https://example.com",
-          headers: { Authorization: "do-not-export" },
+          headers: { Authorization: { env: "TEST_AUTH_TOKEN" } },
         },
       })
     ).json() as { id: string };
@@ -64,8 +64,7 @@ describe("M5-M8 management APIs", () => {
           config: {
             url: "https://example.com",
             method: "GET",
-            token: "do-not-export",
-            headers: { Authorization: "do-not-export" },
+            headers: { Authorization: { env: "TEST_AUTH_TOKEN" } },
           },
           inputSchema: {
             type: "object",
@@ -177,7 +176,7 @@ describe("M5-M8 management APIs", () => {
       mcpServers: Array<{ headers: Record<string, unknown> }>;
       omitted: string[];
     };
-    expect(JSON.stringify(exportBody)).not.toContain("do-not-export");
+    expect(JSON.stringify(exportBody)).toContain("TEST_AUTH_TOKEN");
     expect(exportBody.omitted.join(" ")).toContain("long-term memories");
     const imported = await app.inject({ method: "POST", url: "/api/registry/import", payload: exportBody });
     expect(imported.statusCode).toBe(202);
