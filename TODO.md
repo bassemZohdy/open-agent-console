@@ -7,6 +7,12 @@ in-process runtimes.
 
 ## Remaining work
 
+- [x] **OAC-0125 · P2 · Validate the Docker Compose user path**
+  - Provide a localhost-bound Compose deployment with a persistent named volume,
+    healthcheck, non-root security settings and a repeatable fake-model smoke
+    command; CI executes the same command after the production-container smoke
+    test.
+
 - [x] **OAC-0104 · P0 · Finish MCP network pinning**
   - HTTP and MCP tools resolve public addresses, pin the connection through a
     custom MCP SDK fetch, reject origin-changing redirects and enforce bounded
