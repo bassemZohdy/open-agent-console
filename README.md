@@ -68,12 +68,24 @@ docker run --rm \
   -p 3000:3000 \
   -v open-agent-console-data:/data \
   -e OPENAI_API_KEY="$OPENAI_API_KEY" \
-  open-agent-console
+open-agent-console
 ```
 
 Open `http://localhost:3000`.
 
 The application stores its SQLite database at `/data/open-agent-console.db` by default and applies versioned migrations automatically on startup.
+
+For a repeatable Compose deployment, copy `.env.example` to `.env` and run:
+
+```bash
+docker compose up --build -d
+curl --fail http://127.0.0.1:3000/api/ready
+```
+
+Compose binds the control panel to localhost, persists `/data` in a named
+volume, enables the container healthcheck, and applies the same non-root
+runtime security settings as the production image. The end-to-end smoke path
+can be run with `npm run smoke:compose` when Docker and `jq` are available.
 
 The control panel is intentionally single-user and unauthenticated. Bind it to
 localhost for personal use, or put it behind an authenticated TLS reverse proxy
@@ -125,6 +137,8 @@ npm test
 npm run build
 npm run api:check
 npm run test:e2e # requires Chromium (npx playwright install chromium)
+# requires Docker and jq
+npm run smoke:compose
 docker build -t open-agent-console .
 ```
 
