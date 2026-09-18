@@ -1,37 +1,81 @@
 # Contributing
 
-## Local development
+## Before you start
 
-1. Use Node.js 24 or newer.
-2. Copy `.env.example` to `.env` and configure only the credentials you need.
-3. Run `npm ci`.
-4. Run `npm run dev`.
-5. Open `http://localhost:5173` during development.
+Open Agent Console is intentionally a small modular monolith. Keep agents as logical in-process runtimes and preserve the single Node.js process, SQLite database, and production image unless an architectural decision explicitly changes that boundary.
 
-Before submitting changes run:
+Use Node.js 24 or newer.
 
-```bash
-npm run typecheck
-npm run lint
-npm test
-npm run build
-docker build -t open-agent-console:ci .
-```
+    cp .env.example .env
+    npm ci
+    npm run dev
 
-When changing dependencies, run `npm install` deliberately, review the dependency diff, and commit the updated `package-lock.json`. CI uses `npm ci` and does not mutate the lockfile.
+The UI runs at http://127.0.0.1:5173. Local data is written to ./data/open-agent-console.db.
+
+## Required verification
+
+Run the narrowest relevant checks while developing, then run the complete gate before opening a pull request:
+
+    npm run typecheck
+    npm run api:check
+    npm run lint
+    npm test
+    npm run test:coverage
+    npm run build
+    npx playwright install chromium
+    npm run test:e2e
+    docker build -t open-agent-console:ci .
+    npm run smoke:compose
+
+The Compose smoke command requires Docker and jq. CI runs the same functional fake-model path after the production-container smoke test.
+
+## Documentation expectations
+
+Update the documentation in the same change as the implementation:
+
+- README.md for user/operator behavior, configuration, or commands;
+- ARCHITECTURE.md for runtime boundaries, persistence, security, or lifecycle;
+- docs/API.md and docs/api-reference.json for API behavior;
+- docs/OPERATIONS.md and docs/MIGRATIONS.md for deployment/data changes;
+- DESIGN.md and UX-CONTRACT.md for UI behavior, accessibility, or visual tokens; and
+- TODO.md only for genuinely outstanding work.
+
+Do not leave completed checkboxes in TODO.md. Git history and release notes provide the historical record.
 
 ## Database and migrations
 
-The application applies Drizzle migrations automatically on startup. Do not edit an already-applied migration; add a new timestamped migration and verify it against both a fresh database and an existing `/data/open-agent-console.db`.
+The application applies Drizzle migrations automatically at startup. Never edit a migration that may already have been applied. Add a new timestamped migration and verify it against:
 
-The default database path is `./data/open-agent-console.db` locally and `/data/open-agent-console.db` in the production container. Keep persistent application data under `/data` in Docker.
+1. a fresh database; and
+2. an existing database containing representative registry and history data.
 
-## Runtime and security boundaries
+Keep persistent Docker data under /data. Do not delete a volume as part of a normal upgrade.
 
-Agents are logical in-process runtimes. Do not add an agent-specific process or container. Model credentials remain environment-variable references. Do not add arbitrary JavaScript tools. Changes to HTTP or MCP tools must preserve URL validation, timeout, output-size, credential-resolution and redirect protections.
+## API and runtime boundaries
+
+Validate request payloads with the existing Zod schemas and preserve the structured error envelope and correlation IDs. Keep provider-specific code in the model factory, persistence in the repository, tool behavior in the tool resolver, and memory behavior behind the connector interface.
+
+Changes to HTTP/MCP tools must preserve public-address validation, pinned connections, timeout/output bounds, redirect protections, environment-backed credentials, and JSON Schema validation.
+
+## Tests
+
+Prefer deterministic tests that use the fake provider or injected database/repository seams. Add:
+
+- route tests for new API behavior;
+- runtime tests for prompt, cache, limit, cancellation, or tool behavior;
+- browser/axe coverage for critical user flows; and
+- migration/acceptance coverage when deployment behavior changes.
+
+Avoid tests that depend on a real provider, public network, or an existing local database.
 
 ## Pull requests
 
-Use a dedicated branch and keep commits cohesive. Before opening a pull request, confirm the working tree is clean, all checks pass, documentation reflects the implementation, and migrations are included for schema changes. Never force-push, bypass branch protections or merge failing/unverified changes.
+Use a dedicated branch and cohesive commits. Include:
 
-Keep the architecture deliberately small. New distributed infrastructure, workflow engines, arbitrary code execution, or agent-per-container behavior require an explicit architectural decision before implementation.
+- a concise problem statement;
+- the implementation and test evidence;
+- migration and rollback notes when data changes;
+- documentation updates; and
+- any intentional product-boundary change.
+
+Before requesting review, confirm that the working tree is clean and that the complete verification gate passes. Do not force-push, bypass branch protections, or merge failing/unverified changes.
