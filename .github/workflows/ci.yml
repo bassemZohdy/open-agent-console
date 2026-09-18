@@ -14,17 +14,27 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run api:check
+      - name: Verify release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="v$(node -p "require('./package.json').version")"
+          test "$GITHUB_REF_NAME" = "$expected" || { echo "Tag $GITHUB_REF_NAME does not match $expected"; exit 1; }
       - run: npm run lint
       - run: npm test
       - run: npm run test:coverage
       - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
       - run: docker build -t open-agent-console:ci .
       - name: Smoke-test the production container
         shell: bash
@@ -32,8 +42,9 @@ jobs:
           set -euo pipefail
           data_dir="${RUNNER_TEMP}/open-agent-console-data"
           mkdir -p "$data_dir"
+          sudo chown 1000:1000 "$data_dir"
           docker run -d --name oac-ci -p 127.0.0.1:39000:3000 -v "$data_dir:/data" open-agent-console:ci
-          cleanup() { docker rm -f oac-ci >/dev/null 2>&1 || true; }
+          cleanup() { docker logs oac-ci 2>&1 || true; docker rm -f oac-ci >/dev/null 2>&1 || true; }
           trap cleanup EXIT
           for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:39000/api/ready >/dev/null; then break; fi
@@ -55,7 +66,7 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:39000/api/models | jq -e 'length == 1' >/dev/null
 
-  publish-image:
+  publish_image:
     name: Publish Docker image
     if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     needs: verify
@@ -66,22 +77,24 @@ jobs:
     permissions:
       contents: read
       actions: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.5.0
         with:
           registry: docker.io
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.11.1
 
       - name: Extract image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.8.0
         with:
           images: docker.io/${{ env.DOCKERHUB_USERNAME }}/open-agent-console
           tags: |
@@ -93,7 +106,8 @@ jobs:
             latest=auto
 
       - name: Build and push image
-        uses: docker/build-push-action@v6
+        id: publish
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.18.0
         with:
           context: .
           push: true
@@ -104,3 +118,27 @@ jobs:
           sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release:
+    name: Publish GitHub release
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.publish_image.result == 'success' }}
+    needs: publish_image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - name: Create release with image digest and operator notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ needs.publish_image.outputs.digest }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "Open Agent Console $GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes "Published multi-architecture image digest: docker.io/${{ secrets.DOCKERHUB_USERNAME || secrets.DOCKER_USERNAME || secrets.DOCKERHUB_USER || 'bzohdy' }}/open-agent-console@$IMAGE_DIGEST
+
+Migration notes: see docs/MIGRATIONS.md.
+
+Rollback: redeploy the previous immutable image digest and restore the SQLite database backup described in docs/OPERATIONS.md. Do not roll back the application without checking migration compatibility."

@@ -29,13 +29,13 @@ import {
   updateToolSchema,
   updateModelSchema,
 } from "./domain/schemas.js";
-import { AgentRuntimeManager } from "./runtime/agent-runtime-manager.js";
 import {
   assertPublicHttpUrl,
   discoverMcpTools,
 } from "./runtime/tool-resolver.js";
 import { testModelConnection } from "./runtime/model-factory.js";
 import { appVersion } from "./version.js";
+import { resolveAppDependencies, type AppDependencies } from "./app-dependencies.js";
 
 const ajv = new Ajv({ allErrors: true, strict: false });
 
@@ -194,22 +194,21 @@ function safeToolConfig(value: unknown): Record<string, unknown> {
   return redact(value) as Record<string, unknown>;
 }
 
-async function withSqliteTransaction<T>(work: () => Promise<T>): Promise<T> {
-  sqlite.exec("BEGIN IMMEDIATE");
+async function withSqliteTransaction<T>(connection: typeof sqlite, work: () => Promise<T>): Promise<T> {
+  connection.exec("BEGIN IMMEDIATE");
   try {
     const result = await work();
-    sqlite.exec("COMMIT");
+    connection.exec("COMMIT");
     return result;
   } catch (error) {
-    sqlite.exec("ROLLBACK");
+    connection.exec("ROLLBACK");
     throw error;
   }
 }
 
-export function buildApp() {
+export function buildApp(options: AppDependencies = {}) {
   const app = Fastify({ logger: true, bodyLimit: 1_048_576 });
-  const runtime = new AgentRuntimeManager();
-  const repository = new RegistryRepository();
+  const { repository, runtime, sqlite: sqliteConnection } = resolveAppDependencies(options);
   app.addHook("onRequest", async (request, reply) => {
     reply.header("x-correlation-id", request.id);
   });
@@ -252,7 +251,7 @@ export function buildApp() {
   app.get("/api/health", async () => ({ status: "ok" }));
   app.get("/api/ready", async (_request, reply) => {
     try {
-      sqlite.prepare("SELECT 1").get();
+      sqliteConnection.prepare("SELECT 1").get();
       return { status: "ready" };
     } catch {
       return reply.code(503).send({ status: "not-ready" });
@@ -1049,7 +1048,7 @@ export function buildApp() {
     }
     for (const agent of input.agents) agent.id ??= randomUUID();
     try {
-      const imported = await withSqliteTransaction(async () => {
+      const imported = await withSqliteTransaction(sqliteConnection, async () => {
         let created = 0;
         let updated = 0;
         for (const model of input.models) {

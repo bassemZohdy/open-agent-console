@@ -18,7 +18,10 @@
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src tests vite.config.ts drizzle.config.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "api:generate": "node --import tsx/esm scripts/generate-api-reference.ts",
+    "api:check": "node --import tsx/esm scripts/generate-api-reference.ts --check",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@fastify/static": "^10.1.3",
@@ -28,6 +31,7 @@
     "@langchain/mcp-adapters": "^1.1.4",
     "@langchain/ollama": "^1.3.0",
     "@langchain/openai": "^1.5.13",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "ajv": "^8.20.0",
     "dotenv": "^17.4.2",
     "drizzle-orm": "1.0.0-rc.4",
@@ -41,7 +45,9 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.55.0",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^24.0.0",

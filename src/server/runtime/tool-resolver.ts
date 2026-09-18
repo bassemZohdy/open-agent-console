@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import { MultiServerMCPClient } from "@langchain/mcp-adapters";
+import { loadMcpTools } from "@langchain/mcp-adapters";
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Ajv } from "ajv";
 import type { InferSelectModel } from "drizzle-orm";
 import { RegistryRepository } from "../db/repository.js";
@@ -179,7 +181,7 @@ function isPrivateAddress(address: string): boolean {
   return true;
 }
 
-type PublicHttpTarget = { url: URL; address: string; family: 4 | 6 };
+export type PublicHttpTarget = { url: URL; address: string; family: 4 | 6 };
 
 async function resolvePublicHttpTarget(rawUrl: string): Promise<PublicHttpTarget> {
   const url = new URL(rawUrl);
@@ -213,7 +215,7 @@ async function fetchPinned<T>(target: PublicHttpTarget, init: RequestInit, consu
     } as never,
   });
   try {
-    const response = await fetch(target.url, { ...init, dispatcher } as RequestInit & { dispatcher: Agent });
+    const response = await undiciFetch(target.url, { ...init, dispatcher } as unknown as Parameters<typeof undiciFetch>[1]) as unknown as Response;
     return await consume(response);
   } finally {
     await dispatcher.close();
@@ -358,6 +360,115 @@ function mcpHeaders(server: McpServerRecord): Record<string, string> {
   return resolveHeaders(parseObject(server.headersJson, "MCP server headers"));
 }
 
+function boundedEnvironmentNumber(name: string, fallback: number, minimum: number, maximum: number): number {
+  const value = Number(process.env[name]);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(Math.max(Math.floor(value), minimum), maximum);
+}
+
+type PinnedFetch = {
+  fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
+  close: () => Promise<void>;
+};
+
+export function createPinnedFetch(target: PublicHttpTarget, headers: Record<string, string>): PinnedFetch {
+  const timeoutMs = boundedEnvironmentNumber("OAC_MCP_TIMEOUT_MS", 15_000, 1_000, 60_000);
+  const maxResponseBytes = boundedEnvironmentNumber("OAC_MAX_MCP_RESPONSE_BYTES", 1_000_000, 16_384, 10_000_000);
+  const dispatcher = new Agent({
+    connect: {
+      lookup: (_hostname: string, _options: unknown, callback: (error: NodeJS.ErrnoException | null, address: string, family: number) => void) =>
+        callback(null, target.address, target.family),
+    } as never,
+  });
+
+  const pinnedFetch = async (rawUrl: string | URL, init: RequestInit = {}): Promise<Response> => {
+    const requestUrl = new URL(rawUrl);
+    if (requestUrl.origin !== target.url.origin)
+      throw new Error("MCP transport attempted to connect to an unpinned origin");
+    const mergedHeaders = new Headers(headers);
+    new Headers(init.headers).forEach((value, key) => mergedHeaders.set(key, value));
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
+    const response = await undiciFetch(requestUrl, {
+      ...init,
+      headers: mergedHeaders,
+      signal,
+      redirect: "error",
+      dispatcher,
+    } as unknown as Parameters<typeof undiciFetch>[1]) as unknown as Response;
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > maxResponseBytes)
+      throw new Error(`MCP response exceeds ${maxResponseBytes} bytes`);
+    if (!response.body) return response;
+    const reader = response.body.getReader();
+    let total = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          const next = await reader.read();
+          if (next.done) {
+            controller.close();
+            return;
+          }
+          total += next.value.byteLength;
+          if (total > maxResponseBytes) {
+            await reader.cancel();
+            controller.error(new Error(`MCP response exceeds ${maxResponseBytes} bytes`));
+            return;
+          }
+          controller.enqueue(next.value);
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        await reader.cancel(reason);
+      },
+    });
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  };
+  return { fetch: pinnedFetch, close: () => dispatcher.close() };
+}
+
+async function loadPinnedMcpTools(server: McpServerRecord): Promise<{
+  tools: ResolvedTool[];
+  close: () => Promise<void>;
+}> {
+  const target = await resolvePublicHttpTarget(server.url);
+  const headers = mcpHeaders(server);
+  const pinned = createPinnedFetch(target, headers);
+  const client = new McpClient({ name: "open-agent-console", version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(target.url, {
+    fetch: pinned.fetch,
+    requestInit: { headers: { ...headers } },
+    reconnectionOptions: {
+      maxRetries: 0,
+      initialReconnectionDelay: 0,
+      maxReconnectionDelay: 0,
+      reconnectionDelayGrowFactor: 1,
+    },
+  });
+  try {
+    await client.connect(transport);
+    const tools = await loadMcpTools(server.id, client, {
+      throwOnLoadError: true,
+      prefixToolNameWithServerName: false,
+      useStandardContentBlocks: true,
+    });
+    return {
+      tools,
+      close: async () => {
+        await client.close().catch(() => undefined);
+        await pinned.close();
+      },
+    };
+  } catch (error) {
+    await client.close().catch(() => undefined);
+    await pinned.close();
+    throw error;
+  }
+}
+
 export type ResolvedTools = {
   tools: ResolvedTool[];
   dispose: () => Promise<void>;
@@ -369,7 +480,7 @@ export async function resolveTools(
 ): Promise<ResolvedTools> {
   const mappings = await repository.listAgentTools(agentId);
   const resolved: ResolvedTool[] = [];
-  const clients: MultiServerMCPClient[] = [];
+  const connections: Array<() => Promise<void>> = [];
 
   for (const { tool: record } of mappings) {
     if (!record.enabled) continue;
@@ -392,21 +503,9 @@ export async function resolveTools(
       if (!record.mcpServerId || !record.externalName) continue;
       const server = await repository.getMcpServer(record.mcpServerId);
       if (!server?.enabled) continue;
-      await assertPublicHttpUrl(server.url);
-      const client = new MultiServerMCPClient({
-        throwOnLoadError: true,
-        prefixToolNameWithServerName: false,
-        useStandardContentBlocks: true,
-        mcpServers: {
-          [server.id]: {
-            transport: "http",
-            url: server.url,
-            headers: mcpHeaders(server),
-          },
-        },
-      });
-      clients.push(client);
-      const found = (await client.getTools()).find(
+      const connection = await loadPinnedMcpTools(server);
+      connections.push(connection.close);
+      const found = connection.tools.find(
         (tool) => tool.name === record.externalName,
       );
       if (!found)
@@ -420,7 +519,7 @@ export async function resolveTools(
   return {
     tools: resolved,
     dispose: async () => {
-      await Promise.allSettled(clients.map((client) => client.close()));
+      await Promise.allSettled(connections.map((close) => close()));
     },
   };
 }
@@ -428,26 +527,13 @@ export async function resolveTools(
 export async function discoverMcpTools(
   server: McpServerRecord,
 ): Promise<Array<{ name: string; description: string }>> {
-  await assertPublicHttpUrl(server.url);
-  const client = new MultiServerMCPClient({
-    throwOnLoadError: true,
-    prefixToolNameWithServerName: false,
-    useStandardContentBlocks: true,
-    mcpServers: {
-      [server.id]: {
-        transport: "http",
-        url: server.url,
-        headers: mcpHeaders(server),
-      },
-    },
-  });
+  const connection = await loadPinnedMcpTools(server);
   try {
-    const discovered = await client.getTools();
-    return discovered.map((tool) => ({
+    return connection.tools.map((tool) => ({
       name: tool.name,
       description: tool.description || tool.name,
     }));
   } finally {
-    await client.close();
+    await connection.close();
   }
 }
