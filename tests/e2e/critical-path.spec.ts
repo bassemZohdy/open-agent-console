@@ -36,7 +36,7 @@ test.describe("control panel critical paths", () => {
     await page.getByLabel("Message the agent").fill("hello from browser");
     await page.getByRole("button", { name: "Send" }).click();
     await expect(page.getByRole("dialog", { name: "E2E agent chat" })).toContainText("hello from browser");
-    await expect(page.getByRole("dialog", { name: "E2E agent chat" })).toContainText("deterministic");
+    await expect(page.getByRole("dialog", { name: "E2E agent chat" })).toContainText("Deterministic");
     await page.getByRole("button", { name: "Close chat" }).click();
 
     await page.getByRole("button", { name: /Sessions Conversation history/ }).click();
