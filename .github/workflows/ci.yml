@@ -141,6 +141,6 @@ jobs:
             --generate-notes \
             --notes "Published multi-architecture image digest: docker.io/${{ secrets.DOCKERHUB_USERNAME || secrets.DOCKER_USERNAME || secrets.DOCKERHUB_USER || 'bzohdy' }}/open-agent-console@$IMAGE_DIGEST
 
-Migration notes: see docs/MIGRATIONS.md.
+            Migration notes: see docs/MIGRATIONS.md.
 
-Rollback: redeploy the previous immutable image digest and restore the SQLite database backup described in docs/OPERATIONS.md. Do not roll back the application without checking migration compatibility."
+            Rollback: redeploy the previous immutable image digest and restore the SQLite database backup described in docs/OPERATIONS.md. Do not roll back the application without checking migration compatibility."
