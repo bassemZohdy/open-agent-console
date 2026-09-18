@@ -36,7 +36,7 @@ test.describe("control panel critical paths", () => {
     await page.getByRole("button", { name: "Create agent" }).click();
     await expect(page.getByText(agentName, { exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: "Chat" }).click();
+    await page.locator(".registry-row").filter({ hasText: agentName }).getByRole("button", { name: "Chat" }).click();
     await page.getByLabel("Message the agent").fill("hello from browser");
     await page.getByRole("button", { name: "Send" }).click();
     await expect(page.getByRole("dialog", { name: `${agentName} chat` })).toContainText("hello from browser");
@@ -64,6 +64,6 @@ test.describe("control panel critical paths", () => {
       mimeType: "application/json",
       buffer: Buffer.from(JSON.stringify({ version: 1, models: [], skills: [], tools: [], mcpServers: [], memoryConnectors: [], agents: [] })),
     });
-    await expect(page.getByRole("status")).toContainText("Registry imported");
+    await expect(page.locator('[role="status"]').filter({ hasText: "Registry imported" })).toBeVisible();
   });
 });
