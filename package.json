@@ -23,6 +23,7 @@
     "api:generate": "node --import tsx/esm scripts/generate-api-reference.ts",
     "api:check": "node --import tsx/esm scripts/generate-api-reference.ts --check",
     "smoke:compose": "bash scripts/smoke-compose.sh",
+    "capture:demo": "node scripts/capture-demo.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {

@@ -62,6 +62,31 @@ The image listens on port 3000, runs as the non-root node user, contains compile
 
 The fake provider with model ID deterministic is intended for local development, demonstrations, and automated tests; it never calls an external model.
 
+## Screenshots and demo
+
+The following captures use the built-in deterministic fake provider, so they do not contain real credentials or external model output.
+
+![Open Agent Console dashboard](docs/assets/dashboard.png)
+
+_Dashboard: registry inventory, runtime readiness, and recent operational state._
+
+![Open Agent Console agent chat](docs/assets/agent-chat.png)
+
+_Agent chat: a persisted session with a streamed deterministic response._
+
+![Open Agent Console run detail](docs/assets/run-detail.png)
+
+_Run detail: completed execution status, correlation ID, duration, and tool-call summary._
+
+[Watch the short browser walkthrough](docs/assets/open-agent-console-demo.webm)
+
+Regenerate the captures locally with Node.js 24+, Chromium, and the development server running:
+
+    HOST=127.0.0.1 PORT=3000 DB_FILE_NAME=/tmp/oac-demo.db npm run dev
+    npm run capture:demo
+
+The command writes media to docs/assets. See [docs/assets/README.md](docs/assets/README.md) for capture metadata and reproducibility notes.
+
 ## Local development
 
 Requirements: Node.js 24 or newer and npm.
@@ -79,6 +104,7 @@ The Vite UI is at http://127.0.0.1:5173 and proxies /api to Fastify on port 3000
     npm run api:check
     npx playwright install chromium
     npm run test:e2e
+    npm run capture:demo
     npm run smoke:compose       # requires Docker and jq
 
 Use npm install only when intentionally changing dependencies; review and commit package-lock.json. CI and Docker use npm ci.
