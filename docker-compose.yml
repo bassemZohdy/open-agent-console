@@ -1,13 +1,27 @@
 services:
   open-agent-console:
+    init: true
     build: .
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     env_file:
-      - .env
+      - ${OAC_ENV_FILE:-.env}
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      DB_FILE_NAME: /data/open-agent-console.db
+      DB_MIGRATIONS_DIR: /app/drizzle
     volumes:
       - open-agent-console-data:/data
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
 
 volumes:
   open-agent-console-data:
