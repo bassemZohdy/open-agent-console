@@ -1,0 +1,1613 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Open Agent Console API",
+    "version": "0.4.0",
+    "description": "Checked REST and server-sent event contract for the Open Agent Console control plane."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Liveness check",
+        "responses": {
+          "200": {
+            "description": "Service is healthy"
+          }
+        }
+      }
+    },
+    "/api/ready": {
+      "get": {
+        "summary": "Readiness check",
+        "responses": {
+          "200": {
+            "description": "Database is ready"
+          },
+          "503": {
+            "description": "Database is unavailable"
+          }
+        }
+      }
+    },
+    "/api/models": {
+      "get": {
+        "summary": "List models",
+        "responses": {
+          "200": {
+            "description": "Models"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a model",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateModel"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created model"
+          }
+        }
+      }
+    },
+    "/api/agents": {
+      "get": {
+        "summary": "List agents",
+        "responses": {
+          "200": {
+            "description": "Agents"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create an agent",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgent"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created agent"
+          }
+        }
+      }
+    },
+    "/api/agents/{agentId}/chat": {
+      "post": {
+        "summary": "Stream an agent response",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Server-sent events stream"
+          }
+        }
+      }
+    },
+    "/api/agents/{agentId}/mappings": {
+      "put": {
+        "summary": "Replace agent skill and tool mappings",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentMappings"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated mappings"
+          }
+        }
+      }
+    },
+    "/api/registry/export": {
+      "get": {
+        "summary": "Export registry configuration",
+        "responses": {
+          "200": {
+            "description": "Registry export",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryImport"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/registry/import": {
+      "post": {
+        "summary": "Import registry configuration",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistryImport"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Import result"
+          }
+        }
+      }
+    },
+    "/api/sessions": {
+      "get": {
+        "summary": "List sessions",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sessions"
+          }
+        }
+      }
+    },
+    "/api/runs": {
+      "get": {
+        "summary": "List runs",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "running",
+                "completed",
+                "failed",
+                "cancelled"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Runs"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateModel": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "openai-compatible",
+              "anthropic",
+              "google",
+              "ollama",
+              "fake"
+            ]
+          },
+          "modelId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "baseUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uri"
+              },
+              {
+                "type": "string",
+                "const": ""
+              }
+            ]
+          },
+          "apiKeyEnv": {
+            "type": "string",
+            "maxLength": 120,
+            "pattern": "^$|^[A-Z][A-Z0-9_]*$"
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "maxTokens": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 1000000
+          },
+          "capabilities": {
+            "default": [
+              "streaming"
+            ],
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "streaming",
+                "tools",
+                "vision",
+                "audio",
+                "structured-output"
+              ]
+            }
+          },
+          "timeoutMs": {
+            "default": 60000,
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 300000
+          },
+          "maxRetries": {
+            "default": 2,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
+          }
+        },
+        "required": [
+          "name",
+          "provider",
+          "modelId",
+          "apiKeyEnv",
+          "capabilities",
+          "timeoutMs",
+          "maxRetries"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateModel": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "openai-compatible",
+              "anthropic",
+              "google",
+              "ollama",
+              "fake"
+            ]
+          },
+          "modelId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "baseUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uri"
+              },
+              {
+                "type": "string",
+                "const": ""
+              }
+            ]
+          },
+          "apiKeyEnv": {
+            "type": "string",
+            "maxLength": 120,
+            "pattern": "^$|^[A-Z][A-Z0-9_]*$"
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "maxTokens": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 1000000
+          },
+          "capabilities": {
+            "default": [
+              "streaming"
+            ],
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "streaming",
+                "tools",
+                "vision",
+                "audio",
+                "structured-output"
+              ]
+            }
+          },
+          "timeoutMs": {
+            "default": 60000,
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 300000
+          },
+          "maxRetries": {
+            "default": 2,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateAgent": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "modelRef": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "memoryConnectorId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "instructions": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "maxTokens": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 1000000
+          },
+          "maxModelCalls": {
+            "default": 6,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "maxToolCalls": {
+            "default": 10,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "skillIds": {
+            "default": [],
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          "toolIds": {
+            "default": [],
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "modelRef",
+          "instructions",
+          "maxModelCalls",
+          "maxToolCalls",
+          "skillIds",
+          "toolIds"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateAgent": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "modelRef": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "memoryConnectorId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "instructions": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "maxTokens": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 1000000
+          },
+          "maxModelCalls": {
+            "default": 6,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "maxToolCalls": {
+            "default": 10,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "skillIds": {
+            "default": [],
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          "toolIds": {
+            "default": [],
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "Skill": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "instructions": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "instructions",
+          "enabled"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateSkill": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "instructions": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Tool": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "builtin-calculator",
+              "builtin-datetime",
+              "http",
+              "mcp"
+            ]
+          },
+          "config": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "inputSchema": {
+            "default": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "mcpServerId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "externalName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "kind",
+          "config",
+          "inputSchema",
+          "enabled"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateTool": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "builtin-calculator",
+              "builtin-datetime",
+              "http",
+              "mcp"
+            ]
+          },
+          "config": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "inputSchema": {
+            "default": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "mcpServerId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "externalName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "McpServer": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "headers": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "env": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    }
+                  },
+                  "required": [
+                    "env"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "url",
+          "headers",
+          "enabled"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateMcpServer": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "headers": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "env": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]*$"
+                    }
+                  },
+                  "required": [
+                    "env"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "MemoryConnector": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "none",
+              "sqlite"
+            ]
+          },
+          "config": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "config",
+          "enabled"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateMemoryConnector": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "none",
+              "sqlite"
+            ]
+          },
+          "config": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Memory": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          },
+          "metadata": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "content",
+          "metadata"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateMemory": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          },
+          "metadata": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      },
+      "AgentMappings": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "skillIds": {
+            "default": [],
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          "toolIds": {
+            "default": [],
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        },
+        "required": [
+          "skillIds",
+          "toolIds"
+        ],
+        "additionalProperties": false
+      },
+      "RegistryImport": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "models": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "openai",
+                    "openai-compatible",
+                    "anthropic",
+                    "google",
+                    "ollama",
+                    "fake"
+                  ]
+                },
+                "modelId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "baseUrl": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    {
+                      "type": "string",
+                      "const": ""
+                    }
+                  ]
+                },
+                "apiKeyEnv": {
+                  "type": "string",
+                  "maxLength": 120,
+                  "pattern": "^$|^[A-Z][A-Z0-9_]*$"
+                },
+                "temperature": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2
+                },
+                "maxTokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1000000
+                },
+                "capabilities": {
+                  "default": [
+                    "streaming"
+                  ],
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "streaming",
+                      "tools",
+                      "vision",
+                      "audio",
+                      "structured-output"
+                    ]
+                  }
+                },
+                "timeoutMs": {
+                  "default": 60000,
+                  "type": "integer",
+                  "minimum": 1000,
+                  "maximum": 300000
+                },
+                "maxRetries": {
+                  "default": 2,
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 10
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "provider",
+                "modelId",
+                "apiKeyEnv",
+                "capabilities",
+                "timeoutMs",
+                "maxRetries"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "skills": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "instructions": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 50000
+                },
+                "enabled": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                }
+              },
+              "required": [
+                "name",
+                "instructions",
+                "enabled"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "tools": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "builtin-calculator",
+                    "builtin-datetime",
+                    "http",
+                    "mcp"
+                  ]
+                },
+                "config": {
+                  "default": {},
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "inputSchema": {
+                  "default": {
+                    "type": "object",
+                    "additionalProperties": false
+                  },
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "mcpServerId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "externalName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "enabled": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                }
+              },
+              "required": [
+                "name",
+                "description",
+                "kind",
+                "config",
+                "inputSchema",
+                "enabled"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "mcpServers": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "headers": {
+                  "default": {},
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "env": {
+                            "type": "string",
+                            "pattern": "^[A-Z][A-Z0-9_]*$"
+                          }
+                        },
+                        "required": [
+                          "env"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "enabled": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                }
+              },
+              "required": [
+                "name",
+                "url",
+                "headers",
+                "enabled"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "memoryConnectors": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "sqlite"
+                  ]
+                },
+                "config": {
+                  "default": {},
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "enabled": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                }
+              },
+              "required": [
+                "name",
+                "type",
+                "config",
+                "enabled"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "agents": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "modelRef": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "memoryConnectorId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "instructions": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 50000
+                },
+                "temperature": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2
+                },
+                "maxTokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1000000
+                },
+                "maxModelCalls": {
+                  "default": 6,
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 50
+                },
+                "maxToolCalls": {
+                  "default": 10,
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                },
+                "skillIds": {
+                  "default": [],
+                  "maxItems": 100,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  }
+                },
+                "toolIds": {
+                  "default": [],
+                  "maxItems": 100,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  }
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "modelRef",
+                "instructions",
+                "maxModelCalls",
+                "maxToolCalls",
+                "skillIds",
+                "toolIds"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "version",
+          "models",
+          "skills",
+          "tools",
+          "mcpServers",
+          "memoryConnectors",
+          "agents"
+        ],
+        "additionalProperties": false
+      },
+      "ChatRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000
+          },
+          "sessionId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateSession": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "SessionQuery": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "agentId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "offset",
+          "limit"
+        ],
+        "additionalProperties": false
+      },
+      "RunQuery": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "agentId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ]
+          }
+        },
+        "required": [
+          "offset",
+          "limit"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "sse": {
+      "description": "Chat emits event: session, token, usage, done, cancelled or error. Each data payload is JSON with version 1.",
+      "contentType": "text/event-stream"
+    }
+  }
+}

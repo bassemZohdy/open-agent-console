@@ -123,6 +123,8 @@ npm run typecheck
 npm run lint
 npm test
 npm run build
+npm run api:check
+npm run test:e2e # requires Chromium (npx playwright install chromium)
 docker build -t open-agent-console .
 ```
 
@@ -162,6 +164,10 @@ Runs record status, errors, correlation IDs, and token usage when the selected p
 
 The currently exposed API includes:
 
+The checked machine-readable REST/SSE contract is generated at
+[`docs/api-reference.json`](docs/api-reference.json). Run `npm run api:check`
+to detect drift after changing a request schema or route.
+
 | Area | Endpoints |
 | --- | --- |
 | Health | `GET /api/health`, `GET /api/ready` |
@@ -191,6 +197,7 @@ GET /api/ready
 - model/tool call counts are bounded per run
 - HTTP tool URLs require HTTP(S), reject embedded credentials and reject DNS results in private/restricted ranges
 - HTTP tool requests have bounded timeouts/output and do not follow redirects
+- MCP Streamable HTTP requests pin the resolved public address, reject origin-changing redirects, and use bounded reconnects, timeouts and response bytes (`OAC_MCP_TIMEOUT_MS`, `OAC_MAX_MCP_RESPONSE_BYTES`)
 - MCP header credentials can be referenced through environment variables
 - Secret-like HTTP/MCP configuration values must use environment-variable references; raw authorization, token, key, password and credential values are rejected
 - assistant Markdown does not enable raw HTML and is sanitized

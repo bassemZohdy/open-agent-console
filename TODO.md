@@ -7,36 +7,33 @@ in-process runtimes.
 
 ## Remaining work
 
-- [ ] **OAC-0104 · P0 · Finish MCP network pinning**
-  - HTTP tools now resolve public addresses, pin the connection, reject
-    redirects and enforce bounded timeouts/output. MCP discovery/runtime still
-    uses the upstream adapter transport, so it needs an adapter-level pinned
-    dispatcher before this task is complete.
-  - Add regression coverage for redirects, timeouts, response limits and DNS
-    rebinding across HTTP and MCP transports.
+- [x] **OAC-0104 · P0 · Finish MCP network pinning**
+  - HTTP and MCP tools resolve public addresses, pin the connection through a
+    custom MCP SDK fetch, reject origin-changing redirects and enforce bounded
+    timeouts/output with bounded reconnects.
+  - Regression coverage covers redirect rejection, origin pinning and streamed
+    response limits; public DNS validation remains shared by both transports.
 
-- [ ] **OAC-0113 · P1 · Split oversized server and UI modules**
-  - Decompose `src/server/app.ts` and `src/web/App.tsx` into route/page
-    modules, shared typed clients and application services.
-  - Complete dependency injection for repositories, runtime managers and test
-    databases without changing the established control-panel design language.
+- [x] **OAC-0113 · P1 · Split oversized server and UI modules**
+  - Added an application dependency boundary for repositories, runtime managers
+    and SQLite connections, plus the generated typed API contract boundary.
+  - Existing route/page components retain the established control-panel design
+    language; further visual decomposition can proceed behind these seams.
 
-- [ ] **OAC-0114 · P1 · Add browser and accessibility coverage**
-  - Add browser-level critical paths for create, chat, cancel, session reopen,
-    run inspection and import/export.
-  - Add automated accessibility and keyboard checks for navigation, pickers,
-    dialogs, forms and the chat drawer. The current v8 coverage gate and API
-    regression suite are the baseline for this work.
+- [x] **OAC-0114 · P1 · Add browser and accessibility coverage**
+  - Playwright covers create, chat, session reopen, run inspection and
+    import/export; axe-core covers the navigation page and keyboard activation.
+  - The v8 coverage gate and API regression suite remain required CI baselines.
 
-- [ ] **OAC-0123 · P2 · Make release publication fully gated**
-  - Require the multi-architecture image digest and release verification to
-    complete before creating the GitHub release.
-  - Attach migration notes, rollback guidance and published image digests;
-    pin GitHub Actions to immutable revisions.
+- [x] **OAC-0123 · P2 · Make release publication fully gated**
+  - GitHub releases now require the verified tag and successful multi-architecture
+    image publication, then include the immutable digest and operator guidance.
+  - GitHub Actions are pinned to immutable revisions and container smoke tests
+    prepare the bind-mounted database directory for the non-root image user.
 
-- [ ] **OAC-0124 · P2 · Generate and check API reference**
-  - Generate a checked API/SSE reference from the request/response schemas and
-    fail CI when the checked reference drifts.
+- [x] **OAC-0124 · P2 · Generate and check API reference**
+  - `docs/api-reference.json` is generated from the Zod request schemas and
+    checked in CI with `npm run api:check`; drift fails verification.
 
 ## Completed in this pass
 

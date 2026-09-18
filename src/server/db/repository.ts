@@ -20,7 +20,7 @@ import {
 export type Database = typeof db;
 
 export class RegistryRepository {
-  constructor(private readonly database: Database = db) {}
+  constructor(public readonly database: Database = db) {}
 
   listModels() {
     return this.database.select().from(models).orderBy(desc(models.createdAt));
