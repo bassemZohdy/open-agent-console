@@ -16,33 +16,37 @@ test.describe("control panel critical paths", () => {
     expect(results.violations).toEqual([]);
   });
 
-  test("create, chat, reopen session, inspect run, and export", async ({ page }) => {
+  test("create, chat, reopen session, inspect run, and export", async ({ page }, testInfo) => {
+    const suffix = `${testInfo.workerIndex}-${testInfo.retry}-${Date.now()}`;
+    const modelName = `E2E fake model ${suffix}`;
+    const agentName = `E2E agent ${suffix}`;
+
     await page.getByRole("button", { name: /Models Providers/ }).click();
-    await page.getByLabel("Name").fill("E2E fake model");
+    await page.getByLabel("Name").fill(modelName);
     await page.getByLabel("Provider").selectOption("fake");
     await page.getByLabel("Model ID").fill("deterministic");
     await page.getByLabel("Credential environment variable").fill("");
     await page.getByRole("button", { name: "Save model" }).click();
-    await expect(page.getByText("E2E fake model")).toBeVisible();
+    await expect(page.getByText(modelName, { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: /Agents Runtime instances/ }).click();
-    await page.getByLabel("Name").fill("E2E agent");
-    await page.getByLabel("Model").selectOption({ label: "E2E fake model" });
+    await page.getByLabel("Name").fill(agentName);
+    await page.locator("#agent-model").selectOption({ label: modelName });
     await page.getByLabel("Instructions").fill("Reply with a short deterministic response.");
     await page.getByRole("button", { name: "Create agent" }).click();
-    await expect(page.getByText("E2E agent")).toBeVisible();
+    await expect(page.getByText(agentName, { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "Chat" }).click();
     await page.getByLabel("Message the agent").fill("hello from browser");
     await page.getByRole("button", { name: "Send" }).click();
-    await expect(page.getByRole("dialog", { name: "E2E agent chat" })).toContainText("hello from browser");
-    await expect(page.getByRole("dialog", { name: "E2E agent chat" })).toContainText("Deterministic");
+    await expect(page.getByRole("dialog", { name: `${agentName} chat` })).toContainText("hello from browser");
+    await expect(page.getByRole("dialog", { name: `${agentName} chat` })).toContainText("Deterministic");
     await page.getByRole("button", { name: "Close chat" }).click();
 
     await page.getByRole("button", { name: /Sessions Conversation history/ }).click();
     await expect(page.getByText("hello from browser")).toBeVisible();
     await page.getByRole("button", { name: "Open" }).click();
-    await expect(page.getByRole("dialog", { name: "E2E agent chat" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: `${agentName} chat` })).toBeVisible();
     await page.getByRole("button", { name: "Close chat" }).click();
 
     await page.getByRole("button", { name: /Runs Execution log/ }).click();
