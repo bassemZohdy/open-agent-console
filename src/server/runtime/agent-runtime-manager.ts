@@ -14,6 +14,7 @@ type AgentRecord = InferSelectModel<typeof agents>;
 type ModelRecord = InferSelectModel<typeof models>;
 type Runtime = ReturnType<typeof createAgent>;
 type Usage = { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+type ChatAttachment = { name: string; mimeType: string; size: number; text?: string };
 
 type CachedRuntime = { key: string; runtime: Runtime; dispose: () => Promise<void> };
 
@@ -42,6 +43,44 @@ function configuredLimit(name: string, fallback: number, minimum: number, maximu
   const parsed = Number(process.env[name]);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(Math.floor(parsed), minimum), maximum);
+}
+
+function formatAttachmentContext(attachments: ChatAttachment[]): string {
+  let remaining = 120_000;
+  const sections: string[] = [];
+  for (const attachment of attachments) {
+    if (remaining <= 0) break;
+    const header = `[Attached file: ${attachment.name} | ${attachment.mimeType} | ${attachment.size} bytes]`;
+    const text = attachment.text?.trim();
+    const section = text ? `${header}\n${text.slice(0, remaining)}` : header;
+    sections.push(section);
+    remaining -= section.length;
+  }
+  return sections.length > 0
+    ? `\n\nThe user attached the following files. Use their text as additional context when relevant:\n${sections.join("\n\n")}`
+    : "";
+}
+
+function parseStoredAttachments(value: string | null | undefined): ChatAttachment[] {
+  try {
+    const parsed: unknown = JSON.parse(value ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const row = item as Record<string, unknown>;
+      if (
+        typeof row.name !== "string" ||
+        typeof row.mimeType !== "string" ||
+        typeof row.size !== "number" ||
+        !Number.isInteger(row.size) ||
+        row.size < 0
+      ) return [];
+      const text = typeof row.text === "string" ? row.text.slice(0, 60_000) : undefined;
+      return [{ name: row.name, mimeType: row.mimeType, size: row.size, text }];
+    });
+  } catch {
+    return [];
+  }
 }
 
 export class AgentRuntimeManager {
@@ -137,7 +176,7 @@ export class AgentRuntimeManager {
     agentId: string,
     requestedSessionId: string | undefined,
     userText: string,
-    options: { signal?: AbortSignal; correlationId?: string } = {},
+    options: { signal?: AbortSignal; correlationId?: string; attachments?: ChatAttachment[] } = {},
   ): AsyncGenerator<StreamEvent> {
     const agentRows = await this.database.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.enabled, true))).limit(1);
     const agentRow = agentRows[0];
@@ -156,7 +195,14 @@ export class AgentRuntimeManager {
       await this.database.insert(sessions).values({ id: sessionId, agentId, title: userText.slice(0, 80), createdAt: now, updatedAt: now });
     }
 
-    await this.database.insert(messages).values({ id: randomUUID(), sessionId, role: 'user', content: userText, createdAt: now });
+    await this.database.insert(messages).values({
+      id: randomUUID(),
+      sessionId,
+      role: 'user',
+      content: userText,
+      attachmentsJson: JSON.stringify(options.attachments ?? []),
+      createdAt: now,
+    });
     await this.database.update(sessions).set({ updatedAt: now }).where(eq(sessions.id, sessionId));
     const runId = randomUUID();
     const correlationId = options.correlationId ?? randomUUID();
@@ -174,7 +220,8 @@ export class AgentRuntimeManager {
       for (let index = history.length - 1; index >= 0; index -= 1) {
         const message = history[index];
         if (!message) continue;
-        const nextChars = historyChars + message.content.length;
+        const attachmentContext = formatAttachmentContext(parseStoredAttachments(message.attachmentsJson));
+        const nextChars = historyChars + message.content.length + attachmentContext.length;
         if (boundedHistory.length > 0 && nextChars > maxHistoryChars) {
           contextTruncated = true;
           break;
@@ -194,8 +241,12 @@ export class AgentRuntimeManager {
       }
       await this.database.update(runs).set({ contextTruncated }).where(eq(runs.id, runId));
       const runtime = await this.getRuntime(agentRow, modelRow);
+      const modelHistory = boundedHistory.map((message) => ({
+        role: message.role,
+        content: `${message.content}${formatAttachmentContext(parseStoredAttachments(message.attachmentsJson))}`,
+      }));
       const eventStream = await runtime.streamEvents(
-        { messages: boundedHistory.map((message) => ({ role: message.role, content: message.content })) },
+        { messages: modelHistory },
         { version: 'v3', signal: options.signal, timeout: modelRow.timeoutMs, metadata: { oacRunId: runId, oacAgentId: agentId } },
       );
 

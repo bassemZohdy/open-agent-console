@@ -1,10 +1,13 @@
-import { and, asc, count, desc, eq } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "./index.js";
 import {
   agents,
   agentSkills,
   agentTools,
+  a2aAuditEvents,
+  a2aExposures,
+  a2aTasks,
   mcpServers,
   memories,
   memoryConnectors,
@@ -16,6 +19,33 @@ import {
   toolCalls,
   tools,
 } from "./schema.js";
+
+type MessageAttachmentSummary = {
+  name: string;
+  mimeType: string;
+  size: number;
+};
+
+function messageAttachmentSummaries(value: string | null | undefined): MessageAttachmentSummary[] {
+  try {
+    const parsed: unknown = JSON.parse(value ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const row = item as Record<string, unknown>;
+      if (
+        typeof row.name !== "string" ||
+        typeof row.mimeType !== "string" ||
+        typeof row.size !== "number" ||
+        !Number.isInteger(row.size) ||
+        row.size < 0
+      ) return [];
+      return [{ name: row.name, mimeType: row.mimeType, size: row.size }];
+    });
+  } catch {
+    return [];
+  }
+}
 
 export type Database = typeof db;
 
@@ -62,6 +92,95 @@ export class RegistryRepository {
   }
   deleteAgent(id: string) {
     return this.database.delete(agents).where(eq(agents.id, id));
+  }
+
+  listA2aExposures() {
+    return this.database.select().from(a2aExposures).orderBy(asc(a2aExposures.slug));
+  }
+  getA2aExposure(id: string) {
+    return this.database
+      .select()
+      .from(a2aExposures)
+      .where(eq(a2aExposures.id, id))
+      .limit(1)
+      .then((rows) => rows[0]);
+  }
+  getA2aExposureByAgentId(agentId: string) {
+    return this.database
+      .select()
+      .from(a2aExposures)
+      .where(eq(a2aExposures.agentId, agentId))
+      .limit(1)
+      .then((rows) => rows[0]);
+  }
+  getA2aExposureBySlug(slug: string) {
+    return this.database
+      .select()
+      .from(a2aExposures)
+      .where(eq(a2aExposures.slug, slug))
+      .limit(1)
+      .then((rows) => rows[0]);
+  }
+  insertA2aExposure(row: typeof a2aExposures.$inferInsert) {
+    return this.database.insert(a2aExposures).values(row);
+  }
+  updateA2aExposure(id: string, patch: Partial<typeof a2aExposures.$inferInsert>) {
+    return this.database.update(a2aExposures).set(patch).where(eq(a2aExposures.id, id));
+  }
+  deleteA2aExposure(id: string) {
+    return this.database.delete(a2aExposures).where(eq(a2aExposures.id, id));
+  }
+  listA2aTasks(exposureId: string, options: { contextId?: string; limit?: number; offset?: number } = {}) {
+    return this.database
+      .select()
+      .from(a2aTasks)
+      .where(and(
+        eq(a2aTasks.exposureId, exposureId),
+        options.contextId ? eq(a2aTasks.contextId, options.contextId) : undefined,
+      ))
+      .orderBy(desc(a2aTasks.createdAt))
+      .limit(options.limit ?? 50)
+      .offset(options.offset ?? 0);
+  }
+  getA2aTask(id: string) {
+    return this.database
+      .select()
+      .from(a2aTasks)
+      .where(eq(a2aTasks.id, id))
+      .limit(1)
+      .then((rows) => rows[0]);
+  }
+  getA2aTaskByMessageId(exposureId: string, messageId: string) {
+    return this.database
+      .select()
+      .from(a2aTasks)
+      .where(and(eq(a2aTasks.exposureId, exposureId), eq(a2aTasks.clientMessageId, messageId)))
+      .limit(1)
+      .then((rows) => rows[0]);
+  }
+  countA2aTasks(exposureId: string, states = ["TASK_STATE_SUBMITTED", "TASK_STATE_WORKING"]) {
+    return this.database
+      .select({ total: count() })
+      .from(a2aTasks)
+      .where(and(eq(a2aTasks.exposureId, exposureId), inArray(a2aTasks.state, states)))
+      .then((rows) => Number(rows[0]?.total ?? 0));
+  }
+  insertA2aTask(row: typeof a2aTasks.$inferInsert) {
+    return this.database.insert(a2aTasks).values(row);
+  }
+  updateA2aTask(id: string, patch: Partial<typeof a2aTasks.$inferInsert>) {
+    return this.database.update(a2aTasks).set(patch).where(eq(a2aTasks.id, id));
+  }
+  insertA2aAuditEvent(row: typeof a2aAuditEvents.$inferInsert) {
+    return this.database.insert(a2aAuditEvents).values(row);
+  }
+  listA2aAuditEvents(exposureId: string, limit = 100) {
+    return this.database
+      .select()
+      .from(a2aAuditEvents)
+      .where(eq(a2aAuditEvents.exposureId, exposureId))
+      .orderBy(desc(a2aAuditEvents.createdAt))
+      .limit(limit);
   }
 
   listSkills() {
@@ -286,7 +405,11 @@ export class RegistryRepository {
       .select()
       .from(messages)
       .where(eq(messages.sessionId, sessionId))
-      .orderBy(asc(messages.createdAt));
+      .orderBy(asc(messages.createdAt))
+      .then((rows) => rows.map(({ attachmentsJson, ...message }) => ({
+        ...message,
+        attachments: messageAttachmentSummaries(attachmentsJson),
+      })));
   }
   insertSession(row: typeof sessions.$inferInsert) {
     return this.database.insert(sessions).values(row);
@@ -301,14 +424,17 @@ export class RegistryRepository {
     return this.database.insert(messages).values(row);
   }
 
-  listRuns(offset: number, limit: number, filters: { agentId?: string; status?: string } = {}) {
-    const condition = filters.agentId && filters.status
-      ? and(eq(runs.agentId, filters.agentId), eq(runs.status, filters.status))
-      : filters.agentId
-        ? eq(runs.agentId, filters.agentId)
-        : filters.status
-          ? eq(runs.status, filters.status)
-          : undefined;
+  listRuns(
+    offset: number,
+    limit: number,
+    filters: { agentId?: string; sessionId?: string; status?: string } = {},
+  ) {
+    const conditions = [
+      filters.agentId ? eq(runs.agentId, filters.agentId) : undefined,
+      filters.sessionId ? eq(runs.sessionId, filters.sessionId) : undefined,
+      filters.status ? eq(runs.status, filters.status) : undefined,
+    ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+    const condition = conditions.length > 0 ? and(...conditions) : undefined;
     return this.database
       .select()
       .from(runs)
@@ -317,14 +443,13 @@ export class RegistryRepository {
       .limit(limit)
       .offset(offset);
   }
-  countRuns(filters: { agentId?: string; status?: string } = {}) {
-    const condition = filters.agentId && filters.status
-      ? and(eq(runs.agentId, filters.agentId), eq(runs.status, filters.status))
-      : filters.agentId
-        ? eq(runs.agentId, filters.agentId)
-        : filters.status
-          ? eq(runs.status, filters.status)
-          : undefined;
+  countRuns(filters: { agentId?: string; sessionId?: string; status?: string } = {}) {
+    const conditions = [
+      filters.agentId ? eq(runs.agentId, filters.agentId) : undefined,
+      filters.sessionId ? eq(runs.sessionId, filters.sessionId) : undefined,
+      filters.status ? eq(runs.status, filters.status) : undefined,
+    ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+    const condition = conditions.length > 0 ? and(...conditions) : undefined;
     return this.database
       .select({ total: count() })
       .from(runs)

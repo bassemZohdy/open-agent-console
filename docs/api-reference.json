@@ -90,6 +90,369 @@
         }
       }
     },
+    "/api/a2a/exposures": {
+      "get": {
+        "summary": "List admin-managed A2A exposure drafts",
+        "responses": {
+          "200": {
+            "description": "A2A exposure drafts"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create an admin-managed A2A exposure draft",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateA2aExposure"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created A2A exposure draft"
+          }
+        }
+      }
+    },
+    "/api/a2a/exposures/{exposureId}": {
+      "put": {
+        "summary": "Update an admin-managed A2A exposure draft",
+        "parameters": [
+          {
+            "name": "exposureId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateA2aExposure"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated A2A exposure draft"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete an admin-managed A2A exposure draft",
+        "parameters": [
+          {
+            "name": "exposureId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted A2A exposure draft"
+          }
+        }
+      }
+    },
+    "/a2a/{slug}/.well-known/agent-card.json": {
+      "get": {
+        "summary": "Get the public or authenticated A2A Agent Card",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A2A Agent Card"
+          },
+          "404": {
+            "description": "Agent is not published"
+          }
+        }
+      }
+    },
+    "/a2a/{slug}/message:send": {
+      "post": {
+        "summary": "Submit an A2A message and receive a task",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "A2A-Version",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1.0"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/a2a+json": {
+              "schema": {
+                "$ref": "#/components/schemas/A2aSendMessage"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A2A task"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "429": {
+            "description": "Rate limit exceeded"
+          }
+        }
+      }
+    },
+    "/a2a/{slug}/message:stream": {
+      "post": {
+        "summary": "Submit an A2A message and stream task updates",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "A2A-Version",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1.0"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/a2a+json": {
+              "schema": {
+                "$ref": "#/components/schemas/A2aSendMessage"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A2A SSE task stream"
+          }
+        }
+      }
+    },
+    "/a2a/{slug}/tasks": {
+      "get": {
+        "summary": "List caller-owned A2A tasks",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "A2A-Version",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1.0"
+              ]
+            }
+          },
+          {
+            "name": "contextId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A2A task page"
+          }
+        }
+      }
+    },
+    "/a2a/{slug}/tasks/{taskId}": {
+      "get": {
+        "summary": "Get a caller-owned A2A task",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "A2A-Version",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1.0"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A2A task"
+          }
+        }
+      }
+    },
+    "/a2a/{slug}/tasks/{taskId}:cancel": {
+      "post": {
+        "summary": "Cancel a caller-owned A2A task",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "A2A-Version",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1.0"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canceled or terminal A2A task"
+          }
+        }
+      }
+    },
+    "/a2a/{slug}/tasks/{taskId}:subscribe": {
+      "post": {
+        "summary": "Subscribe to a caller-owned A2A task over SSE",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "A2A-Version",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1.0"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A2A SSE task stream"
+          }
+        }
+      }
+    },
     "/api/agents/{agentId}/chat": {
       "post": {
         "summary": "Stream an agent response",
@@ -222,6 +585,27 @@
         "responses": {
           "200": {
             "description": "Sessions"
+          }
+        }
+      }
+    },
+    "/api/sessions/{sessionId}/messages": {
+      "get": {
+        "summary": "Read messages and attachment references for a session",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session messages with attachment metadata"
           }
         }
       }
@@ -439,6 +823,269 @@
         },
         "additionalProperties": false
       },
+      "CreateA2aExposure": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "published": {
+            "default": false,
+            "type": "boolean"
+          },
+          "visibility": {
+            "default": "private",
+            "type": "string",
+            "enum": [
+              "private",
+              "internal",
+              "public"
+            ]
+          },
+          "authMode": {
+            "default": "bearer",
+            "type": "string",
+            "enum": [
+              "bearer",
+              "none"
+            ]
+          },
+          "authEnv": {
+            "type": "string",
+            "maxLength": 120,
+            "pattern": "^$|^[A-Z][A-Z0-9_]*$"
+          },
+          "streaming": {
+            "default": true,
+            "type": "boolean"
+          },
+          "maxTaskSeconds": {
+            "default": 300,
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 3600
+          },
+          "maxRequestsPerMinute": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "maxConcurrentTasks": {
+            "default": 4,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32
+          },
+          "enabled": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agentId",
+          "slug",
+          "published",
+          "visibility",
+          "authMode",
+          "streaming",
+          "maxTaskSeconds",
+          "maxRequestsPerMinute",
+          "maxConcurrentTasks",
+          "enabled"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateA2aExposure": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "published": {
+            "type": "boolean"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "internal",
+              "public"
+            ]
+          },
+          "authMode": {
+            "type": "string",
+            "enum": [
+              "bearer",
+              "none"
+            ]
+          },
+          "authEnv": {
+            "type": "string",
+            "maxLength": 120,
+            "pattern": "^$|^[A-Z][A-Z0-9_]*$"
+          },
+          "streaming": {
+            "type": "boolean"
+          },
+          "maxTaskSeconds": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 3600
+          },
+          "maxRequestsPerMinute": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "maxConcurrentTasks": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "A2aSendMessage": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "object",
+            "properties": {
+              "messageId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "ROLE_USER",
+                  "user"
+                ]
+              },
+              "parts": {
+                "minItems": 1,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string",
+                      "maxLength": 100000
+                    },
+                    "raw": {},
+                    "url": {
+                      "type": "string",
+                      "format": "uri"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "contextId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "taskId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "metadata": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "messageId",
+              "role",
+              "parts"
+            ],
+            "additionalProperties": false
+          },
+          "configuration": {
+            "type": "object",
+            "properties": {
+              "acceptedOutputModes": {
+                "maxItems": 10,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 120
+                }
+              },
+              "historyLength": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "blocking": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "metadata": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "A2aTaskQuery": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "contextId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "pageSize": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "pageToken": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "pageSize"
+        ],
+        "additionalProperties": false
+      },
       "CreateAgent": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -467,6 +1114,15 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "accessLevel": {
+            "default": "user",
+            "type": "string",
+            "enum": [
+              "admin",
+              "user",
+              "guest"
             ]
           },
           "instructions": {
@@ -520,6 +1176,7 @@
         "required": [
           "name",
           "modelRef",
+          "accessLevel",
           "instructions",
           "maxModelCalls",
           "maxToolCalls",
@@ -556,6 +1213,15 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "accessLevel": {
+            "default": "user",
+            "type": "string",
+            "enum": [
+              "admin",
+              "user",
+              "guest"
             ]
           },
           "instructions": {
@@ -1424,6 +2090,15 @@
                     }
                   ]
                 },
+                "accessLevel": {
+                  "default": "user",
+                  "type": "string",
+                  "enum": [
+                    "admin",
+                    "user",
+                    "guest"
+                  ]
+                },
                 "instructions": {
                   "type": "string",
                   "minLength": 1,
@@ -1483,6 +2158,7 @@
               "required": [
                 "name",
                 "modelRef",
+                "accessLevel",
                 "instructions",
                 "maxModelCalls",
                 "maxToolCalls",
@@ -1517,6 +2193,40 @@
             "type": "string",
             "format": "uuid",
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "attachments": {
+            "maxItems": 5,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 180
+                },
+                "mimeType": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 180
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 8388608
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 60000
+                }
+              },
+              "required": [
+                "name",
+                "mimeType",
+                "size"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -1584,6 +2294,11 @@
             "maximum": 100
           },
           "agentId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "sessionId": {
             "type": "string",
             "format": "uuid",
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"

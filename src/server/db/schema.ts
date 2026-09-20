@@ -33,6 +33,7 @@ export const agents = sqliteTable('agents', {
   description: text('description'),
   modelRef: text('model_ref').notNull().references(() => models.id, { onDelete: 'restrict' }),
   memoryConnectorId: text('memory_connector_id').references(() => memoryConnectors.id, { onDelete: 'set null' }),
+  accessLevel: text('access_level').notNull().default('user'),
   instructions: text('instructions').notNull(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   temperature: real('temperature'),
@@ -41,6 +42,54 @@ export const agents = sqliteTable('agents', {
   maxToolCalls: integer('max_tool_calls').notNull().default(10),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+});
+
+export const a2aExposures = sqliteTable('a2a_exposures', {
+  id: text('id').primaryKey(),
+  agentId: text('agent_id').notNull().unique().references(() => agents.id, { onDelete: 'cascade' }),
+  slug: text('slug').notNull().unique(),
+  published: integer('published', { mode: 'boolean' }).notNull().default(false),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  visibility: text('visibility').notNull().default('private'),
+  authMode: text('auth_mode').notNull().default('bearer'),
+  authEnv: text('auth_env'),
+  streaming: integer('streaming', { mode: 'boolean' }).notNull().default(true),
+  maxTaskSeconds: integer('max_task_seconds').notNull().default(300),
+  maxRequestsPerMinute: integer('max_requests_per_minute').notNull().default(60),
+  maxConcurrentTasks: integer('max_concurrent_tasks').notNull().default(4),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const a2aTasks = sqliteTable('a2a_tasks', {
+  id: text('id').primaryKey(),
+  exposureId: text('exposure_id').notNull().references(() => a2aExposures.id, { onDelete: 'cascade' }),
+  contextId: text('context_id').notNull(),
+  parentTaskId: text('parent_task_id'),
+  clientMessageId: text('client_message_id').notNull(),
+  sessionId: text('session_id').references(() => sessions.id, { onDelete: 'set null' }),
+  runId: text('run_id').references(() => runs.id, { onDelete: 'set null' }),
+  state: text('state').notNull().default('TASK_STATE_SUBMITTED'),
+  inputJson: text('input_json').notNull(),
+  outputText: text('output_text'),
+  errorCode: text('error_code'),
+  errorMessage: text('error_message'),
+  callerHash: text('caller_hash').notNull(),
+  correlationId: text('correlation_id').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  completedAt: text('completed_at'),
+});
+
+export const a2aAuditEvents = sqliteTable('a2a_audit_events', {
+  id: text('id').primaryKey(),
+  exposureId: text('exposure_id').references(() => a2aExposures.id, { onDelete: 'set null' }),
+  taskId: text('task_id').references(() => a2aTasks.id, { onDelete: 'set null' }),
+  actorType: text('actor_type').notNull(),
+  action: text('action').notNull(),
+  callerHash: text('caller_hash'),
+  metadataJson: text('metadata_json').notNull().default('{}'),
+  createdAt: text('created_at').notNull(),
 });
 
 export const skills = sqliteTable('skills', {
@@ -104,6 +153,7 @@ export const messages = sqliteTable('messages', {
   sessionId: text('session_id').notNull().references(() => sessions.id, { onDelete: 'cascade' }),
   role: text('role').notNull(),
   content: text('content').notNull(),
+  attachmentsJson: text('attachments_json').notNull().default('[]'),
   createdAt: text('created_at').notNull(),
 });
 

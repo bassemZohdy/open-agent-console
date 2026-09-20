@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import fastifyStatic from "@fastify/static";
@@ -9,6 +9,9 @@ import { sqlite } from "./db/index.js";
 import { RegistryRepository } from "./db/repository.js";
 import {
   agentMappingsSchema,
+  createA2aExposureSchema,
+  a2aSendMessageSchema,
+  a2aTaskQuerySchema,
   chatRequestSchema,
   createAgentSchema,
   createModelSchema,
@@ -21,6 +24,7 @@ import {
   skillSchema,
   toolSchema,
   updateAgentSchema,
+  updateA2aExposureSchema,
   updateMemorySchema,
   updateMemoryConnectorSchema,
   updateMcpServerSchema,
@@ -28,14 +32,23 @@ import {
   updateSessionSchema,
   updateToolSchema,
   updateModelSchema,
+  loginSchema,
 } from "./domain/schemas.js";
 import {
   assertPublicHttpUrl,
   discoverMcpTools,
 } from "./runtime/tool-resolver.js";
 import { testModelConnection } from "./runtime/model-factory.js";
+import { A2aTaskError, A2aTaskManager, callerFingerprint } from "./runtime/a2a-task-manager.js";
 import { appVersion } from "./version.js";
-import { resolveAppDependencies, type AppDependencies } from "./app-dependencies.js";
+import {
+  resolveAppDependencies,
+  credentialDigest,
+  type AccessRole,
+  type AppDependencies,
+  type AuthAccount,
+  type AuthConfig,
+} from "./app-dependencies.js";
 
 const ajv = new Ajv({ allErrors: true, strict: false });
 
@@ -128,18 +141,64 @@ function memoryPayload(row: unknown) {
   };
 }
 
-async function agentPayload(repository: RegistryRepository, row: unknown) {
+function a2aExposurePayload(row: unknown, agent?: unknown): Record<string, unknown> {
+  if (!row || typeof row !== "object") return {};
+  const record = row as Record<string, unknown>;
+  const agentReady = Boolean(agent && typeof agent === "object" && (agent as Record<string, unknown>).enabled !== false);
+  const transportReady = Boolean(
+    record.published &&
+      record.enabled !== false &&
+      agentReady &&
+      (record.authMode === "none" || (typeof record.authEnv === "string" && Boolean(process.env[record.authEnv]))),
+  );
+  return {
+    ...record,
+    status: !record.published ? "draft" : record.enabled === false ? "paused" : transportReady ? "published" : "unavailable",
+    transportReady,
+    ...(agent && typeof agent === "object"
+      ? {
+          agent: {
+            id: (agent as Record<string, unknown>).id,
+            name: (agent as Record<string, unknown>).name,
+            description: (agent as Record<string, unknown>).description,
+            accessLevel: (agent as Record<string, unknown>).accessLevel,
+            enabled: (agent as Record<string, unknown>).enabled,
+          },
+        }
+      : {}),
+  };
+}
+
+async function agentPayload(
+  repository: RegistryRepository,
+  row: unknown,
+  role: AccessRole = "admin",
+) {
   if (!row) return row;
   const record = row as Record<string, unknown> & { id: string };
   const [orderedSkills, orderedTools] = await Promise.all([
     repository.listAgentSkills(record.id),
     repository.listAgentTools(record.id),
   ]);
-  return {
+  const payload = {
     ...record,
     skillIds: orderedSkills.map(({ skill }) => skill.id),
     toolIds: orderedTools.map(({ tool }) => tool.id),
   };
+  if (role === "admin") return payload;
+  const publicPayload = { ...payload } as Record<string, unknown>;
+  for (const key of [
+    "instructions",
+    "skillIds",
+    "toolIds",
+    "memoryConnectorId",
+    "temperature",
+    "maxTokens",
+    "maxModelCalls",
+    "maxToolCalls",
+  ])
+    delete publicPayload[key];
+  return publicPayload;
 }
 
 async function validateAgentReferences(
@@ -206,12 +265,225 @@ async function withSqliteTransaction<T>(connection: typeof sqlite, work: () => P
   }
 }
 
+const adminResourceRoots = [
+  "/api/models",
+  "/api/agents",
+  "/api/a2a",
+  "/api/skills",
+  "/api/tools",
+  "/api/mcp-servers",
+  "/api/memory-connectors",
+  "/api/registry",
+];
+
+type AgentAccessLevel = "admin" | "user" | "guest";
+
+function normalizedAgentAccess(value: unknown): AgentAccessLevel {
+  return value === "admin" || value === "guest" ? value : "user";
+}
+
+function canAccessAgent(role: AccessRole, accessLevel: unknown): boolean {
+  const level = normalizedAgentAccess(accessLevel);
+  if (role === "admin") return true;
+  if (role === "user") return level !== "admin";
+  return level === "guest";
+}
+
+function isAdminOnlyRequest(method: string, requestUrl: string): boolean {
+  const pathname = requestUrl.split("?", 1)[0] ?? requestUrl;
+  if (pathname === "/api/settings") return true;
+  if (pathname === "/api/registry/export") return true;
+  if (pathname === "/api/a2a" || pathname.startsWith("/api/a2a/")) return true;
+  if (/^\/api\/agents\/[^/]+\/chat$/.test(pathname)) return false;
+  if (method === "GET") return false;
+  if (pathname === "/api/agents" && method === "POST") return true;
+  return adminResourceRoots.some(
+    (root) => pathname === root || pathname.startsWith(`${root}/`),
+  );
+}
+
+type AuthSession = {
+  username: string;
+  role: AccessRole;
+  expiresAt: number;
+};
+
+function cookieValue(cookieHeader: string | undefined, name: string): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(";")) {
+    const [key, ...value] = part.trim().split("=");
+    if (key === name) return value.join("=") || undefined;
+  }
+  return undefined;
+}
+
+function sessionCookie(
+  config: AuthConfig,
+  token: string,
+  maxAge: number,
+): string {
+  return [
+    `${config.cookieName}=${token}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${Math.max(0, Math.trunc(maxAge))}`,
+    ...(config.secureCookie ? ["Secure"] : []),
+  ].join("; ");
+}
+
+function sameDigest(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function roleCapabilities(role: AccessRole): string[] {
+  return role === "admin"
+    ? ["operate", "configure", "transfer"]
+    : role === "user"
+      ? ["operate", "chat", "review"]
+      : ["chat"];
+}
+
+function accountFor(
+  accounts: AuthAccount[],
+  username: string,
+  password: string,
+): AuthAccount | undefined {
+  const account = accounts.find((candidate) => candidate.username === username);
+  return account && sameDigest(account.passwordDigest, credentialDigest(password))
+    ? account
+    : undefined;
+}
+
 export function buildApp(options: AppDependencies = {}) {
   const app = Fastify({ logger: true, bodyLimit: 1_048_576 });
-  const { repository, runtime, sqlite: sqliteConnection } = resolveAppDependencies(options);
+  app.addContentTypeParser("application/a2a+json", { parseAs: "string" }, (_request, body, done) => {
+    try {
+      done(null, JSON.parse(body as string));
+    } catch (error) {
+      done(error as Error, undefined);
+    }
+  });
+  const {
+    repository,
+    runtime,
+    sqlite: sqliteConnection,
+    role: fallbackRole,
+    auth,
+  } = resolveAppDependencies(options);
+  const a2aTasks = new A2aTaskManager(repository, runtime);
+  const a2aRateBuckets = new Map<string, number[]>();
+  const sessions = new Map<string, AuthSession>();
+  const authEnabled = auth.accounts.length > 0;
+  const publicApiPaths = new Set([
+    "/api/health",
+    "/api/ready",
+    "/api/auth/me",
+    "/api/auth/login",
+    "/api/auth/logout",
+  ]);
+  const currentSession = (request: { headers: { cookie?: string } }) => {
+    const token = cookieValue(request.headers.cookie, auth.cookieName);
+    const session = token ? sessions.get(token) : undefined;
+    if (session && session.expiresAt <= Date.now()) {
+      sessions.delete(token as string);
+      return undefined;
+    }
+    return session;
+  };
+  const currentRole = (request: { headers: { cookie?: string } }): AccessRole =>
+    currentSession(request)?.role ?? (authEnabled ? "guest" : fallbackRole);
+  const isGuestWorkspaceRequest = (method: string, pathname: string): boolean =>
+    (method === "GET" &&
+      (pathname === "/api/agents" ||
+        pathname === "/api/sessions" ||
+        pathname === "/api/runs" ||
+        /^\/api\/sessions\/[^/]+\/messages$/.test(pathname) ||
+        /^\/api\/runs\/[^/]+$/.test(pathname))) ||
+    (method === "DELETE" && /^\/api\/sessions\/[^/]+$/.test(pathname)) ||
+    (method === "POST" && /^\/api\/agents\/[^/]+\/chat$/.test(pathname));
   app.addHook("onRequest", async (request, reply) => {
     reply.header("x-correlation-id", request.id);
   });
+  app.addHook("preHandler", async (request, reply) => {
+    const pathname = request.url.split("?", 1)[0] ?? request.url;
+    if (!pathname.startsWith("/api/")) return;
+    const session = currentSession(request);
+    if (
+      authEnabled &&
+      !publicApiPaths.has(pathname) &&
+      !session &&
+      !isGuestWorkspaceRequest(request.method, pathname)
+    ) {
+      return reply.code(401).send({
+        error: "Authentication required",
+        code: "AUTH_REQUIRED",
+      });
+    }
+    const role = session?.role ?? (authEnabled ? "guest" : fallbackRole);
+    if (role !== "admin" && isAdminOnlyRequest(request.method, request.url)) {
+      return reply.code(403).send({
+        error: "Admin role required for this operation",
+        code: "FORBIDDEN",
+      });
+    }
+    if (role === "admin") return;
+    const agentMatch = /^\/api\/agents\/([^/]+)\/(chat|effective-prompt|memories(?:\/.*)?)$/.exec(pathname);
+    if (agentMatch) {
+      const agentId = agentMatch[1];
+      const agent = agentId ? await repository.getAgent(agentId) : undefined;
+      if (agent && (!canAccessAgent(role, agent.accessLevel) ||
+        (role === "guest" && agentMatch[2] !== "chat"))) {
+        return reply.code(403).send({
+          error: "This agent is not available for the current role",
+          code: "AGENT_ACCESS_DENIED",
+        });
+      }
+    }
+    const sessionMatch = /^\/api\/sessions\/([^/]+)/.exec(pathname);
+    if (sessionMatch) {
+      const sessionId = sessionMatch[1];
+      const session = sessionId ? await repository.getSession(sessionId) : undefined;
+      const agent = session ? await repository.getAgent(session.agentId) : undefined;
+      if (agent && !canAccessAgent(role, agent.accessLevel)) {
+        return reply.code(404).send({
+          error: "Session not found",
+          code: "SESSION_NOT_FOUND",
+        });
+      }
+    }
+    const runMatch = /^\/api\/runs\/([^/]+)/.exec(pathname);
+    if (runMatch) {
+      const runId = runMatch[1];
+      const run = runId ? await repository.getRun(runId) : undefined;
+      const agent = run ? await repository.getAgent(run.agentId) : undefined;
+      if (agent && !canAccessAgent(role, agent.accessLevel)) {
+        return reply.code(403).send({
+          error: "This run is not available for the current role",
+          code: "RUN_ACCESS_DENIED",
+        });
+      }
+    }
+  });
+  const accessibleAgentIds = async (request: { headers: { cookie?: string } }) => {
+    const role = currentRole(request);
+    return role === "admin"
+      ? undefined
+      : (await repository.listAgents())
+          .filter((agent) => canAccessAgent(role, agent.accessLevel))
+          .map((agent) => agent.id);
+  };
+  const accessibleSession = async (
+    request: { headers: { cookie?: string } },
+    id: string,
+  ) => {
+    const session = await repository.getSession(id);
+    if (!session) return undefined;
+    const visibleIds = await accessibleAgentIds(request);
+    return visibleIds && !visibleIds.includes(session.agentId) ? null : session;
+  };
   app.setErrorHandler((error, request, reply) => {
     const correlationId = request.id;
     const sendError = (statusCode: number, code: string, message: string, details?: unknown) =>
@@ -222,6 +494,8 @@ export function buildApp(options: AppDependencies = {}) {
       return sendError(400, "MALFORMED_JSON", "Malformed JSON payload");
     if (error instanceof AppError)
       return sendError(error.statusCode, error.errorCode, error.message);
+    if (error instanceof A2aTaskError)
+      return sendError(error.statusCode, error.code, error.message);
     const code = (error as { code?: string }).code;
     if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED")
       return sendError(503, "DATABASE_BUSY", "Database is temporarily busy; retry the request");
@@ -256,6 +530,60 @@ export function buildApp(options: AppDependencies = {}) {
     } catch {
       return reply.code(503).send({ status: "not-ready" });
     }
+  });
+  app.post("/api/auth/login", async (request, reply) => {
+    if (!authEnabled)
+      return reply.code(409).send({
+        error: "Demo authentication is not configured",
+        code: "AUTH_NOT_CONFIGURED",
+      });
+    const input = loginSchema.parse(request.body);
+    const account = accountFor(auth.accounts, input.username, input.password);
+    if (!account)
+      return reply.code(401).send({
+        error: "Invalid username or password",
+        code: "AUTH_INVALID_CREDENTIALS",
+      });
+    const token = randomBytes(32).toString("base64url");
+    sessions.set(token, {
+      username: account.username,
+      role: account.role,
+      expiresAt: Date.now() + auth.sessionTtlMs,
+    });
+    reply.header("Cache-Control", "no-store");
+    reply.header(
+      "Set-Cookie",
+      sessionCookie(auth, token, Math.floor(auth.sessionTtlMs / 1000)),
+    );
+    return {
+      authenticated: true,
+      username: account.username,
+      role: account.role,
+      capabilities: roleCapabilities(account.role),
+    };
+  });
+  app.post("/api/auth/logout", async (request, reply) => {
+    const token = cookieValue(request.headers.cookie, auth.cookieName);
+    if (token) sessions.delete(token);
+    reply.header("Cache-Control", "no-store");
+    reply.header("Set-Cookie", sessionCookie(auth, "", 0));
+    return { authenticated: false };
+  });
+  app.get("/api/auth/me", async (request, reply) => {
+    const session = currentSession(request);
+    reply.header("Cache-Control", "no-store");
+    if (authEnabled && !session)
+      return {
+        authenticated: false,
+        capabilities: [],
+      };
+    const role = session?.role ?? fallbackRole;
+    return {
+      authenticated: true,
+      username: session?.username ?? "local",
+      role,
+      capabilities: roleCapabilities(role),
+    };
   });
   app.get("/api/settings", async () => ({
     application: "Open Agent Console",
@@ -615,13 +943,16 @@ export function buildApp(options: AppDependencies = {}) {
     return reply.code(204).send();
   });
 
-  app.get("/api/agents", async () =>
-    Promise.all(
-      (await repository.listAgents()).map((agent) =>
-        agentPayload(repository, agent),
-      ),
-    ),
-  );
+  app.get("/api/agents", async (request) => {
+    const ids = await accessibleAgentIds(request);
+    const role = currentRole(request);
+    const rows = await repository.listAgents();
+    return Promise.all(
+      rows
+        .filter((agent) => !ids || ids.includes(agent.id))
+        .map((agent) => agentPayload(repository, agent, role)),
+    );
+  });
   async function saveAgent(
     input: ReturnType<typeof createAgentSchema.parse>,
     id?: string,
@@ -639,6 +970,7 @@ export function buildApp(options: AppDependencies = {}) {
         description: input.description ?? null,
         modelRef: input.modelRef,
         memoryConnectorId: input.memoryConnectorId ?? null,
+        accessLevel: input.accessLevel,
         instructions: input.instructions,
         temperature: input.temperature ?? null,
         maxTokens: input.maxTokens ?? null,
@@ -657,6 +989,7 @@ export function buildApp(options: AppDependencies = {}) {
       description: input.description ?? null,
       modelRef: input.modelRef,
       memoryConnectorId: input.memoryConnectorId ?? null,
+      accessLevel: input.accessLevel,
       instructions: input.instructions,
       enabled: true,
       temperature: input.temperature ?? null,
@@ -703,6 +1036,7 @@ export function buildApp(options: AppDependencies = {}) {
         patch.memoryConnectorId === undefined
           ? current.memoryConnectorId
           : patch.memoryConnectorId,
+      accessLevel: patch.accessLevel ?? normalizedAgentAccess(current.accessLevel),
       instructions: patch.instructions ?? current.instructions,
       temperature: patch.temperature ?? current.temperature ?? undefined,
       maxTokens: patch.maxTokens ?? current.maxTokens ?? undefined,
@@ -835,6 +1169,302 @@ export function buildApp(options: AppDependencies = {}) {
     await repository.deleteAgent(id);
     runtime.invalidateAgent(id);
     return reply.code(204).send();
+  });
+
+  app.get("/api/a2a/exposures", async () => {
+    const exposures = await repository.listA2aExposures();
+    return Promise.all(
+      exposures.map(async (exposure) =>
+        a2aExposurePayload(exposure, await repository.getAgent(exposure.agentId)),
+      ),
+    );
+  });
+  app.post("/api/a2a/exposures", async (request, reply) => {
+    const input = createA2aExposureSchema.parse(request.body);
+    const agent = await repository.getAgent(input.agentId);
+    if (!agent) return reply.code(404).send({ error: "Agent not found" });
+    if (await repository.getA2aExposureByAgentId(input.agentId)) {
+      return reply.code(409).send({ error: "This agent already has an A2A exposure" });
+    }
+    if (await repository.getA2aExposureBySlug(input.slug)) {
+      return reply.code(409).send({ error: "This A2A exposure slug is already in use" });
+    }
+    const now = new Date().toISOString();
+    const row = {
+      id: randomUUID(),
+      agentId: input.agentId,
+      slug: input.slug,
+      published: input.published,
+      enabled: input.enabled,
+      visibility: input.visibility,
+      authMode: input.authMode,
+      authEnv: input.authEnv || null,
+      streaming: input.streaming,
+      maxTaskSeconds: input.maxTaskSeconds,
+      maxRequestsPerMinute: input.maxRequestsPerMinute,
+      maxConcurrentTasks: input.maxConcurrentTasks,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await repository.insertA2aExposure(row);
+    await repository.insertA2aAuditEvent({
+      id: randomUUID(),
+      exposureId: row.id,
+      taskId: null,
+      actorType: "ui-admin",
+      action: "exposure.created",
+      callerHash: null,
+      metadataJson: JSON.stringify({ username: currentSession(request)?.username ?? "unknown", slug: row.slug, published: row.published, enabled: row.enabled }),
+      createdAt: now,
+    });
+    return reply.code(201).send(a2aExposurePayload(row, agent));
+  });
+  app.put("/api/a2a/exposures/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const current = await repository.getA2aExposure(id);
+    if (!current) return reply.code(404).send({ error: "A2A exposure not found" });
+    const patch = updateA2aExposureSchema.parse(request.body);
+    const merged = createA2aExposureSchema.parse({
+      agentId: current.agentId,
+      slug: patch.slug ?? current.slug,
+      published: patch.published ?? current.published,
+      enabled: patch.enabled ?? current.enabled,
+      visibility: patch.visibility ?? current.visibility,
+      authMode: patch.authMode ?? current.authMode,
+      authEnv: patch.authEnv === undefined ? current.authEnv ?? undefined : patch.authEnv,
+      streaming: patch.streaming ?? current.streaming,
+      maxTaskSeconds: patch.maxTaskSeconds ?? current.maxTaskSeconds,
+      maxRequestsPerMinute: patch.maxRequestsPerMinute ?? current.maxRequestsPerMinute,
+      maxConcurrentTasks: patch.maxConcurrentTasks ?? current.maxConcurrentTasks,
+    });
+    const slugOwner = await repository.getA2aExposureBySlug(merged.slug);
+    if (slugOwner && slugOwner.id !== id) {
+      return reply.code(409).send({ error: "This A2A exposure slug is already in use" });
+    }
+    await repository.updateA2aExposure(id, {
+      slug: merged.slug,
+      published: merged.published,
+      enabled: merged.enabled,
+      visibility: merged.visibility,
+      authMode: merged.authMode,
+      authEnv: merged.authEnv || null,
+      streaming: merged.streaming,
+      maxTaskSeconds: merged.maxTaskSeconds,
+      maxRequestsPerMinute: merged.maxRequestsPerMinute,
+      maxConcurrentTasks: merged.maxConcurrentTasks,
+      updatedAt: new Date().toISOString(),
+    });
+    await repository.insertA2aAuditEvent({
+      id: randomUUID(),
+      exposureId: id,
+      taskId: null,
+      actorType: "ui-admin",
+      action: "exposure.updated",
+      callerHash: null,
+      metadataJson: JSON.stringify({ username: currentSession(request)?.username ?? "unknown", slug: merged.slug, published: merged.published, enabled: merged.enabled }),
+      createdAt: new Date().toISOString(),
+    });
+    return a2aExposurePayload(
+      await repository.getA2aExposure(id),
+      await repository.getAgent(current.agentId),
+    );
+  });
+  app.delete("/api/a2a/exposures/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!(await repository.getA2aExposure(id))) {
+      return reply.code(404).send({ error: "A2A exposure not found" });
+    }
+    await repository.insertA2aAuditEvent({
+      id: randomUUID(),
+      exposureId: id,
+      taskId: null,
+      actorType: "ui-admin",
+      action: "exposure.deleted",
+      callerHash: null,
+      metadataJson: JSON.stringify({ username: currentSession(request)?.username ?? "unknown" }),
+      createdAt: new Date().toISOString(),
+    });
+    await repository.deleteA2aExposure(id);
+    return reply.code(204).send();
+  });
+
+  const a2aError = (code: string, message: string, data?: unknown) => ({
+    error: { code, message, ...(data === undefined ? {} : { data }) },
+  });
+  const a2aVersion = (request: { headers: Record<string, string | string[] | undefined> }, reply: FastifyReply): boolean => {
+    const version = request.headers["a2a-version"];
+    if (version === "1.0") {
+      reply.header("A2A-Version", "1.0");
+      return true;
+    }
+    reply.code(400).type("application/a2a+json").send(a2aError("VersionNotSupportedError", "A2A-Version: 1.0 is required"));
+    return false;
+  };
+  const a2aExposure = async (slug: string, reply: FastifyReply) => {
+    const exposure = await repository.getA2aExposureBySlug(slug);
+    const agent = exposure ? await repository.getAgent(exposure.agentId) : undefined;
+    if (!exposure || !exposure.published || !exposure.enabled || !agent?.enabled) {
+      reply.code(404).type("application/a2a+json").send(a2aError("AgentNotFoundError", "The requested agent is not available"));
+      return undefined;
+    }
+    return { exposure, agent };
+  };
+  const a2aCaller = async (
+    request: { headers: Record<string, string | string[] | undefined>; ip?: string },
+    reply: FastifyReply,
+    exposure: { id: string; authMode: string; authEnv: string | null; visibility: string },
+    card = false,
+  ): Promise<string | undefined> => {
+    const address = request.ip ?? "unknown";
+    if (card && exposure.visibility === "public") return callerFingerprint(`card:${address}`);
+    if (exposure.authMode === "none") {
+      if (exposure.visibility !== "public") {
+        await repository.insertA2aAuditEvent({ id: randomUUID(), exposureId: exposure.id, taskId: null, actorType: "a2a-caller", action: "auth.denied", callerHash: callerFingerprint(`anonymous:${address}`), metadataJson: "{}", createdAt: new Date().toISOString() });
+        reply.code(401).type("application/a2a+json").send(a2aError("Unauthenticated", "This agent requires authentication"));
+        return undefined;
+      }
+      return callerFingerprint(`anonymous:${address}`);
+    }
+    const configured = exposure.authEnv ? process.env[exposure.authEnv] : undefined;
+    if (!configured) {
+      await repository.insertA2aAuditEvent({ id: randomUUID(), exposureId: exposure.id, taskId: null, actorType: "system", action: "auth.misconfigured", callerHash: null, metadataJson: "{}", createdAt: new Date().toISOString() });
+      reply.code(503).type("application/a2a+json").send(a2aError("ServiceNotReady", "The configured A2A credential is not available"));
+      return undefined;
+    }
+    const header = request.headers.authorization;
+    const raw = typeof header === "string" ? /^Bearer\s+(.+)$/i.exec(header)?.[1] : undefined;
+    const left = Buffer.from(configured);
+    const right = Buffer.from(raw ?? "");
+    if (!raw || left.length !== right.length || !timingSafeEqual(left, right)) {
+      await repository.insertA2aAuditEvent({ id: randomUUID(), exposureId: exposure.id, taskId: null, actorType: "a2a-caller", action: "auth.denied", callerHash: callerFingerprint(`bearer:${raw ?? "missing"}`), metadataJson: "{}", createdAt: new Date().toISOString() });
+      reply.header("WWW-Authenticate", "Bearer");
+      reply.code(401).type("application/a2a+json").send(a2aError("Unauthenticated", "A valid bearer credential is required"));
+      return undefined;
+    }
+    return callerFingerprint(`bearer:${raw}`);
+  };
+  const a2aRateLimit = async (exposure: { id: string; maxRequestsPerMinute: number }, callerHash: string, reply: FastifyReply): Promise<boolean> => {
+    const now = Date.now();
+    const key = `${exposure.id}:${callerHash}`;
+    const recent = (a2aRateBuckets.get(key) ?? []).filter((timestamp) => timestamp > now - 60_000);
+    if (recent.length >= exposure.maxRequestsPerMinute) {
+      a2aRateBuckets.set(key, recent);
+      await repository.insertA2aAuditEvent({ id: randomUUID(), exposureId: exposure.id, taskId: null, actorType: "a2a-caller", action: "request.rate_limited", callerHash, metadataJson: "{}", createdAt: new Date().toISOString() });
+      reply.header("Retry-After", "60");
+      reply.code(429).type("application/a2a+json").send(a2aError("RateLimitExceeded", "The exposure request limit has been reached"));
+      return false;
+    }
+    recent.push(now);
+    a2aRateBuckets.set(key, recent);
+    return true;
+  };
+  const a2aJson = (reply: FastifyReply, payload: unknown, status = 200) => reply.code(status).type("application/a2a+json").send(payload);
+  const a2aPublicBase = (request: { protocol: string; headers: { host?: string } }) =>
+    (process.env.OAC_A2A_PUBLIC_BASE_URL?.trim() || `${request.protocol}://${request.headers.host ?? "127.0.0.1:3000"}`).replace(/\/$/, "");
+
+  app.get("/a2a/:slug/.well-known/agent-card.json", async (request, reply) => {
+    const { slug } = request.params as { slug: string };
+    const state = await a2aExposure(slug, reply);
+    if (!state) return;
+    const caller = await a2aCaller(request, reply, state.exposure, true);
+    if (!caller) return;
+    const skills = (await repository.listAgentSkills(state.agent.id)).filter(({ skill }) => skill.enabled).map(({ skill }) => ({
+      id: skill.id,
+      name: skill.name,
+      description: skill.description ?? "",
+      tags: skill.name.toLowerCase().split(/\s+/).slice(0, 5),
+      examples: [],
+    }));
+    const card = {
+      name: state.agent.name,
+      description: state.agent.description ?? "",
+      version: appVersion,
+      supportedInterfaces: [{ url: `${a2aPublicBase(request)}/a2a/${state.exposure.slug}`, protocolBinding: "HTTP+JSON", protocolVersion: "1.0" }],
+      capabilities: { streaming: state.exposure.streaming, pushNotifications: false, extendedAgentCard: false },
+      defaultInputModes: ["text/plain"],
+      defaultOutputModes: ["text/plain"],
+      skills,
+      ...(state.exposure.authMode === "bearer" ? {
+        securitySchemes: { bearer: { httpAuthSecurityScheme: { scheme: "Bearer", bearerFormat: "Bearer" } } },
+        securityRequirements: [{ bearer: [] }],
+      } : {}),
+    };
+    return a2aJson(reply, card);
+  });
+
+  const submitA2a = async (request: { headers: Record<string, string | string[] | undefined>; ip?: string; id: string; params: unknown; body: unknown }, reply: FastifyReply) => {
+    const { slug } = request.params as { slug: string };
+    const state = await a2aExposure(slug, reply);
+    if (!state || !a2aVersion(request, reply)) return undefined;
+    const caller = await a2aCaller(request, reply, state.exposure);
+    if (!caller || !(await a2aRateLimit(state.exposure, caller, reply))) return undefined;
+    const input = a2aSendMessageSchema.parse(request.body);
+    return a2aTasks.submit(state.exposure, input.message, caller, request.id);
+  };
+  app.post("/a2a/:slug/message*", async (request, reply) => {
+    const operation = request.url.split("/message:", 2)[1]?.split("?", 1)[0];
+    if (operation !== "send" && operation !== "stream") return a2aJson(reply, a2aError("UnsupportedOperationError", "Unsupported message operation"), 404);
+    if (operation === "send") {
+      const task = await submitA2a(request, reply);
+      return task ? a2aJson(reply, task) : undefined;
+    }
+    const { slug } = request.params as { slug: string };
+    const state = await a2aExposure(slug, reply);
+    if (!state || !a2aVersion(request, reply)) return;
+    if (!state.exposure.streaming) return a2aJson(reply, a2aError("UnsupportedOperationError", "Streaming is disabled for this exposure"), 501);
+    const caller = await a2aCaller(request, reply, state.exposure);
+    if (!caller || !(await a2aRateLimit(state.exposure, caller, reply))) return;
+    const input = a2aSendMessageSchema.parse(request.body);
+    const task = await a2aTasks.submit(state.exposure, input.message, caller, request.id);
+    reply.hijack();
+    reply.raw.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no", "A2A-Version": "1.0" });
+    try {
+      for await (const event of a2aTasks.subscribe(state.exposure.id, task.id, caller)) {
+        const name = event.type === "status" ? "status-update" : "artifact-update";
+        reply.raw.write(`event: ${name}\ndata: ${JSON.stringify(event.type === "status" ? { taskId: event.task.id, contextId: event.task.contextId, status: event.task.status, final: event.final } : event)}\n\n`);
+      }
+    } finally {
+      reply.raw.end();
+    }
+  });
+  app.get("/a2a/:slug/tasks", async (request, reply) => {
+    const { slug } = request.params as { slug: string };
+    const state = await a2aExposure(slug, reply);
+    if (!state || !a2aVersion(request, reply)) return;
+    const caller = await a2aCaller(request, reply, state.exposure);
+    if (!caller || !(await a2aRateLimit(state.exposure, caller, reply))) return;
+    const query = a2aTaskQuerySchema.parse(request.query);
+    const offset = query.pageToken ? Number.parseInt(query.pageToken, 10) || 0 : 0;
+    return a2aJson(reply, await a2aTasks.list(state.exposure.id, caller, query.contextId, query.pageSize, offset));
+  });
+  app.get("/a2a/:slug/tasks/:id", async (request, reply) => {
+    const { slug, id } = request.params as { slug: string; id: string };
+    const state = await a2aExposure(slug, reply);
+    if (!state || !a2aVersion(request, reply)) return;
+    const caller = await a2aCaller(request, reply, state.exposure);
+    if (!caller || !(await a2aRateLimit(state.exposure, caller, reply))) return;
+    return a2aJson(reply, await a2aTasks.get(state.exposure.id, id, caller));
+  });
+  app.post("/a2a/:slug/tasks/:id*", async (request, reply) => {
+    const { slug, id } = request.params as { slug: string; id: string };
+    const operation = request.url.split(`${id}:`, 2)[1]?.split("?", 1)[0];
+    if (operation !== "cancel" && operation !== "subscribe") return a2aJson(reply, a2aError("UnsupportedOperationError", "Unsupported task operation"), 404);
+    const state = await a2aExposure(slug, reply);
+    if (!state || !a2aVersion(request, reply)) return;
+    const caller = await a2aCaller(request, reply, state.exposure);
+    if (!caller || !(await a2aRateLimit(state.exposure, caller, reply))) return;
+    if (operation === "cancel") return a2aJson(reply, await a2aTasks.cancel(state.exposure.id, id, caller));
+    if (!state.exposure.streaming) return a2aJson(reply, a2aError("UnsupportedOperationError", "Streaming is disabled for this exposure"), 501);
+    reply.hijack();
+    reply.raw.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no", "A2A-Version": "1.0" });
+    try {
+      for await (const event of a2aTasks.subscribe(state.exposure.id, id, caller)) {
+        const name = event.type === "status" ? "status-update" : "artifact-update";
+        reply.raw.write(`event: ${name}\ndata: ${JSON.stringify(event.type === "status" ? { taskId: event.task.id, contextId: event.task.contextId, status: event.task.status, final: event.final } : event)}\n\n`);
+      }
+    } finally {
+      reply.raw.end();
+    }
   });
 
   async function agentMemory(agentId: string, reply: FastifyReply) {
@@ -995,6 +1625,7 @@ export function buildApp(options: AppDependencies = {}) {
           description: row.description ?? undefined,
           modelRef: row.modelRef,
           memoryConnectorId: row.memoryConnectorId,
+          accessLevel: normalizedAgentAccess(row.accessLevel),
           instructions: row.instructions,
           enabled: row.enabled,
           temperature: row.temperature ?? undefined,
@@ -1208,6 +1839,7 @@ export function buildApp(options: AppDependencies = {}) {
         description: agent.description ?? null,
         modelRef,
         memoryConnectorId,
+        accessLevel: normalizedAgentAccess(agent.accessLevel),
         instructions: agent.instructions,
         enabled: agent.enabled ?? true,
         temperature: agent.temperature ?? null,
@@ -1257,6 +1889,18 @@ export function buildApp(options: AppDependencies = {}) {
 
   app.get("/api/sessions", async (request) => {
     const page = sessionQuerySchema.parse(request.query);
+    const visibleIds = await accessibleAgentIds(request);
+    if (visibleIds) {
+      const rows = await repository.listSessions(0, 10_000, page.agentId);
+      const filtered = rows.filter((row) => visibleIds.includes(row.agentId));
+      const items = filtered.slice(page.offset, page.offset + page.limit);
+      return {
+        items,
+        total: filtered.length,
+        hasMore: page.offset + items.length < filtered.length,
+        ...page,
+      };
+    }
     const [items, total] = await Promise.all([
       repository.listSessions(page.offset, page.limit, page.agentId),
       repository.countSessions(page.agentId),
@@ -1270,7 +1914,7 @@ export function buildApp(options: AppDependencies = {}) {
   });
   app.patch("/api/sessions/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    if (!(await repository.getSession(id)))
+    if (!(await accessibleSession(request, id)))
       return reply.code(404).send({ error: "Session not found" });
     const input = updateSessionSchema.parse(request.body);
     await repository.updateSession(id, {
@@ -1281,20 +1925,36 @@ export function buildApp(options: AppDependencies = {}) {
   });
   app.delete("/api/sessions/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    if (!(await repository.getSession(id)))
+    if (!(await accessibleSession(request, id)))
       return reply.code(404).send({ error: "Session not found" });
     await repository.deleteSession(id);
     return reply.code(204).send();
   });
   app.get("/api/sessions/:id/messages", async (request, reply) => {
     const { id } = request.params as { id: string };
-    if (!(await repository.getSession(id)))
+    if (!(await accessibleSession(request, id)))
       return reply.code(404).send({ error: "Session not found" });
     return repository.listMessages(id);
   });
   app.get("/api/runs", async (request) => {
     const page = runQuerySchema.parse(request.query);
-    const filters = { agentId: page.agentId, status: page.status };
+    const filters = {
+      agentId: page.agentId,
+      sessionId: page.sessionId,
+      status: page.status,
+    };
+    const visibleIds = await accessibleAgentIds(request);
+    if (visibleIds) {
+      const rows = await repository.listRuns(0, 10_000, filters);
+      const filtered = rows.filter((row) => visibleIds.includes(row.agentId));
+      const items = filtered.slice(page.offset, page.offset + page.limit);
+      return {
+        items,
+        total: filtered.length,
+        hasMore: page.offset + items.length < filtered.length,
+        ...page,
+      };
+    }
     const [items, total] = await Promise.all([
       repository.listRuns(page.offset, page.limit, filters),
       repository.countRuns(filters),
@@ -1338,7 +1998,11 @@ export function buildApp(options: AppDependencies = {}) {
         id,
         input.sessionId,
         input.message,
-        { signal: controller.signal, correlationId: request.id },
+        {
+          signal: controller.signal,
+          correlationId: request.id,
+          attachments: input.attachments ?? [],
+        },
       ))
         reply.raw.write(
           `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,

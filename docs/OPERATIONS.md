@@ -1,17 +1,19 @@
 # Operations guide
 
-This application is designed for a single operator and a local or tightly controlled deployment. It has no built-in authentication or authorization.
+This application is designed for a local or tightly controlled deployment. It includes environment-backed demo authentication, HttpOnly session cookies, and API-enforced Admin/User/Guest authorization.
 
 ## Deployment checklist
 
 Before starting a deployment:
 
 1. Use Node.js 24+ for local execution or the published Node 24 image.
-2. Keep the control panel bound to localhost unless an authenticated TLS reverse proxy is in front of it.
-3. Provide only the provider environment variables required by the configured model records.
-4. Mount persistent storage at /data.
-5. Confirm that /api/health and /api/ready respond successfully.
-6. Keep the previous image digest and a recent SQLite backup available before an upgrade.
+2. Set the Admin and User credential variables; replace the demo values before exposure.
+3. Keep the control panel bound to localhost unless an authenticated TLS reverse proxy is in front of it.
+4. Provide only the provider environment variables required by the configured model records.
+5. Mount persistent storage at /data.
+6. If publishing A2A exposures, set `OAC_A2A_PUBLIC_BASE_URL` to the trusted external HTTPS origin.
+7. Confirm that /api/health and /api/ready respond successfully.
+8. Keep the previous image digest and a recent SQLite backup available before an upgrade.
 
 Docker Compose supplies the recommended local deployment. It sets the container user, volume, healthcheck, restart policy, localhost binding, and migration directory.
 
@@ -23,7 +25,15 @@ Model records store environment-variable names, not credentials. MCP header conf
 
 Do not place API keys, bearer tokens, passwords, or raw secret-like values in registry export files, tool configuration, Compose files committed to Git, or issue comments.
 
+Admin-managed A2A exposures store an environment-variable name such as `A2A_API_TOKEN`, never the token itself. The transport is available only when an administrator explicitly enables and publishes an exposure. Bearer tokens are compared in constant time, represented in audit records only by a one-way caller fingerprint, and are never logged or returned. Rotate a credential by changing the environment value and restarting the process; disable the exposure immediately if rotation is urgent.
+
+The A2A gateway is intentionally in-process. Rate limiting is process-local, task state is durable in SQLite, and active tasks are marked failed with `SERVICE_RESTARTED` during a restart instead of being resumed without a lease. Use a trusted TLS reverse proxy with a stable `OAC_A2A_PUBLIC_BASE_URL` before external publication; do not rely on a client-supplied Host header for advertised URLs in production.
+
+A published exposure can be rolled back without a migration by setting `enabled: false` or `published: false` in the admin Settings dialog. The Agent Card then becomes unavailable and new tasks are rejected; existing completed task records remain subject to the normal database retention policy.
+
 Provider credentials are read by the server process. Changing a credential requires restarting the process or container if the provider client was already constructed.
+
+On startup, configured OpenAI, OpenRouter, Anthropic, and Google credentials are used to discover available models and register missing model records. Discovery is idempotent and preserves existing model records. If one provider is unavailable or rejects its credential, the server logs the provider failure and continues without registering that provider's models. Discovery is bounded by `OAC_PROVIDER_DISCOVERY_TIMEOUT_MS` and `OAC_PROVIDER_DISCOVERY_MAX_MODELS`.
 
 ## Health checks
 
@@ -120,3 +130,7 @@ Before exposing the application beyond localhost, verify:
 - logs and backups do not contain secret values.
 
 The application validates public DNS, pins connections, rejects redirects/origin changes, limits response sizes, and bounds model/tool execution. These controls reduce SSRF and resource-exhaustion risk but do not replace network policy or identity controls.
+
+## A2A operations
+
+Monitor A2A status codes and audit actions for `Unauthenticated`, `RateLimitExceeded`, `TASK_QUOTA_EXCEEDED`, `task.failed`, and `SERVICE_RESTARTED`. Do not record request bodies or bearer headers in reverse-proxy access logs. The current Agent Card declares streaming support per exposure and explicitly declares push notifications and extended cards unsupported.

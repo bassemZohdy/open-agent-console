@@ -19,6 +19,10 @@ Open Agent Console runs Drizzle migrations automatically during startup. The mig
 | 20260916010001_registry_runtime_hardening | Registry/runtime hardening and supporting constraints |
 | 20260916030000_skills_tools_memory | Skills, tools, MCP servers, memory connectors, mappings, tool calls, and memories |
 | 20260917010000_context_bounds | Context truncation metadata and bounded runtime context support |
+| 20260920010000_agent_access | Agent access levels for admin, user, and guest workspaces |
+| 20260920020000_a2a_exposure | Admin-managed A2A exposure registry |
+| 20260920030000_a2a_transport | Exposure enable/concurrency controls, durable A2A tasks, and audit events |
+| 20260920040000_message_attachments | Bounded attachment metadata and extracted text linked to session messages |
 
 The exact SQL is versioned in the drizzle directory and is the source of truth.
 

@@ -4,13 +4,16 @@ import { buildApp } from "../src/server/app.js";
 
 describe("model to agent to chat integration", () => {
   it("streams through a local OpenAI-compatible fake endpoint", async () => {
+    const requestBodies: string[] = [];
     const server = createServer((request, response) => {
       let body = "";
       request.on("data", (chunk) => {
         body += chunk;
       });
       request.on("end", () => {
-        expect(body).toContain("integration");
+        requestBodies.push(body);
+        if (requestBodies.length === 1) expect(body).toContain("integration");
+        expect(body).toContain("attachment context");
         response.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           connection: "keep-alive",
@@ -64,7 +67,17 @@ describe("model to agent to chat integration", () => {
       const chat = await app.inject({
         method: "POST",
         url: `/api/agents/${agent.id}/chat`,
-        payload: { message: "integration test" },
+        payload: {
+          message: "integration test",
+          attachments: [
+            {
+              name: "notes.txt",
+              mimeType: "text/plain",
+              size: 17,
+              text: "attachment context",
+            },
+          ],
+        },
       });
       expect(chat.statusCode).toBe(200);
       expect(chat.body).toContain("local fake response");
@@ -74,6 +87,26 @@ describe("model to agent to chat integration", () => {
       const sessionRows = sessions.json() as { items: Array<{ id: string; agentId: string }> };
       const session = sessionRows.items.find((row) => row.agentId === agent.id);
       expect(session).toBeDefined();
+      const storedMessages = await app.inject({
+        method: "GET",
+        url: `/api/sessions/${session?.id}/messages`,
+      });
+      expect(storedMessages.statusCode).toBe(200);
+      expect(storedMessages.json()).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: "integration test",
+          attachments: [{ name: "notes.txt", mimeType: "text/plain", size: 17 }],
+        }),
+      ]));
+      const followUp = await app.inject({
+        method: "POST",
+        url: `/api/agents/${agent.id}/chat`,
+        payload: { message: "follow up", sessionId: session?.id },
+      });
+      expect(followUp.statusCode).toBe(200);
+      expect(requestBodies).toHaveLength(2);
+      expect(requestBodies[1]).toContain("attachment context");
       const runs = await app.inject({ method: "GET", url: "/api/runs?limit=10" });
       expect(runs.statusCode).toBe(200);
       const runRows = runs.json() as { items: Array<{ id: string; agentId: string }>; total: number };

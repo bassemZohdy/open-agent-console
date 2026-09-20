@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { resolve } from "node:path";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -17,9 +18,13 @@ export default defineConfig({
     timeout: 120_000,
     reuseExistingServer: !process.env.CI,
     env: {
-      DB_FILE_NAME: "/tmp/open-agent-console-e2e.db",
+      DB_FILE_NAME: resolve(process.cwd(), "data", "open-agent-console-e2e.db"),
       HOST: "127.0.0.1",
       PORT: "3000",
+      OAC_ADMIN_USERNAME: "admin",
+      OAC_ADMIN_PASSWORD: "admin",
+      OAC_USER_USERNAME: "demo",
+      OAC_USER_PASSWORD: "demo",
     },
   },
 });

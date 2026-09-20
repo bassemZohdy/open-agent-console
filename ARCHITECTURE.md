@@ -15,6 +15,7 @@ An agent is a logical runtime configuration. It does not get its own process, co
     Fastify application
       |       |        |
       |       |        +--> health, readiness, settings, registry transfer
+      |       +-----------> admin-managed A2A exposure registry and gateway
       |       +-----------> registry/session/run routes
       +-------------------> AgentRuntimeManager
                                   |
@@ -32,7 +33,7 @@ An agent is a logical runtime configuration. It does not get its own process, co
                                   |
                                 fake
 
-SQLite stores configuration, sessions, messages, runs, tool calls, and long-term memories.
+SQLite stores configuration, sessions, messages, runs, tool calls, and long-term memories. Published A2A tasks and audit events are stored in the same database and execute through the existing in-process runtime.
 
 ## Component responsibilities
 
@@ -78,7 +79,9 @@ Model creation is isolated in the provider factory. Tool creation is isolated in
 | MCP server | Endpoint and environment-backed headers | Supplies tools discovered from Streamable HTTP |
 | Memory connector | none or SQLite runtime | Selects long-term-memory behavior |
 | Memory | Key/content/metadata by agent and connector | Adds bounded long-term context |
-| Session/message | Application-owned conversation history | Supplies bounded model input |
+| A2A exposure | Admin-owned slug, visibility, auth reference, limits, and publication state | Controls a published A2A interface and its rollback switch |
+| A2A task/audit event | Caller-bound task lifecycle, session/run mapping, correlation, and security event | Supports HTTP+JSON polling, SSE, cancellation, idempotency, and operational evidence |
+| Session/message | Application-owned conversation history and bounded attachment context | Supplies bounded model input and durable message references |
 | Run | Execution status, timing, correlation, usage, error | Provides operational history |
 | Tool call | Per-call input/output/status/error | Provides tool execution audit detail |
 
@@ -97,8 +100,8 @@ Models cannot be deleted while referenced by an agent. Registry imports are tran
 
 ### Chat
 
-1. The browser posts a message to the agent chat endpoint.
-2. Fastify creates or validates the session and creates a running run with a correlation ID.
+1. The browser posts a message and bounded attachment descriptors/extracted text to the agent chat endpoint.
+2. Fastify creates or validates the session, stores the user message with attachment metadata and bounded extracted text, and creates a running run with a correlation ID.
 3. The manager loads recent history and applies message/character bounds.
 4. The manager composes instructions, enabled ordered skills, and bounded memory.
 5. Enabled built-in, HTTP, and MCP tools are resolved and wrapped for call auditing.
@@ -106,7 +109,13 @@ Models cannot be deleted while referenced by an agent. Registry imports are tran
 7. Completed assistant text, run status, usage, and tool-call results are persisted.
 8. Cancellation produces a cancelled run; failures produce a structured error event and failed run.
 
-The database remains authoritative even when a client disconnects. A client can later inspect the run and session state.
+The database remains authoritative even when a client disconnects. A client can later inspect the run and session state; reopened messages expose safe attachment summaries, while stored bounded text is included in future model history. Original binary files are intentionally not uploaded or stored.
+
+### A2A task lifecycle
+
+Published exposures are routed under `/a2a/:slug`. The Agent Card is served from the exposure's well-known path and advertises only text input/output, supported capabilities, skills, and the required bearer scheme when configured. A2A callers use `A2A-Version: 1.0`; their bearer credential is resolved from the configured environment variable and is never persisted. Console cookies and UI roles are not accepted for external transport.
+
+`POST message:send` creates a durable A2A task with a caller-supplied message ID. The task manager returns an existing task for a retry with the same exposure/message ID and caller fingerprint. A task receives a context ID, correlation ID, and (after runtime start) a session/run mapping. The state mapping is `SUBMITTED -> WORKING -> COMPLETED|FAILED|CANCELED`; polling reads the task from SQLite, while SSE emits status and artifact updates when streaming is enabled. Cancellation aborts the in-process runtime and is idempotent for terminal tasks. On process restart, interrupted non-terminal tasks are marked failed with `SERVICE_RESTARTED` rather than resumed without a worker lease.
 
 ## Prompt and context composition
 
@@ -148,7 +157,7 @@ The schema separates short-lived conversation messages from long-term memories. 
 
 ## Security boundaries
 
-The application is single-user and unauthenticated. Operators must keep it on localhost or add an authenticated TLS reverse proxy before network exposure.
+The application supports environment-backed demo credentials and HttpOnly session cookies for Admin, User, and optional Guest access. Sessions are process-local and expire according to `OAC_SESSION_TTL_MS`; operators must keep it on localhost or add an authenticated TLS reverse proxy before network exposure.
 
 Controls include:
 
@@ -160,7 +169,8 @@ Controls include:
 - pinned HTTP connections and no HTTP redirects;
 - MCP origin-changing redirect rejection and bounded reconnect behavior;
 - JSON Schema validation for tool input;
-- sanitized Markdown with raw HTML disabled; and
+- sanitized Markdown with raw HTML disabled;
+- admin-only A2A exposure management with draft/private and disabled defaults, environment-variable auth references, caller-bound bearer authentication, rate/concurrency/time limits, task persistence, and audit events; and
 - non-root Docker runtime, localhost Compose binding, and healthchecks.
 
 Arbitrary JavaScript execution, untrusted plugin installation, and per-agent isolation are outside the current boundary.
@@ -182,4 +192,4 @@ A successful main push publishes latest and immutable SHA tags to Docker Hub. A 
 
 ## Deliberate non-goals
 
-The current architecture does not include a visual workflow builder, workflow engine, distributed agent scheduler, agent-per-container deployment, Kubernetes operator, A2A protocol, message broker, plugin marketplace, or enterprise IAM/RBAC layer.
+The current architecture does not include a visual workflow builder, workflow engine, distributed agent scheduler, agent-per-container deployment, Kubernetes operator, A2A push notifications, extended Agent Cards, non-text A2A parts, message broker, plugin marketplace, or enterprise IAM/RBAC layer. A2A task execution is intentionally in-process and the rate limiter is process-local; use a trusted gateway for horizontally scaled deployments.

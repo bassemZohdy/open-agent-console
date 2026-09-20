@@ -3,7 +3,10 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import {
   agentMappingsSchema,
+  a2aSendMessageSchema,
+  a2aTaskQuerySchema,
   chatRequestSchema,
+  createA2aExposureSchema,
   createAgentSchema,
   createModelSchema,
   memoryConnectorSchema,
@@ -15,6 +18,7 @@ import {
   skillSchema,
   toolSchema,
   updateAgentSchema,
+  updateA2aExposureSchema,
   updateMemoryConnectorSchema,
   updateMemorySchema,
   updateMcpServerSchema,
@@ -34,6 +38,10 @@ function schema(value: z.ZodType): Record<string, unknown> {
 const requestSchemas = {
   CreateModel: createModelSchema,
   UpdateModel: updateModelSchema,
+  CreateA2aExposure: createA2aExposureSchema,
+  UpdateA2aExposure: updateA2aExposureSchema,
+  A2aSendMessage: a2aSendMessageSchema,
+  A2aTaskQuery: a2aTaskQuerySchema,
   CreateAgent: createAgentSchema,
   UpdateAgent: updateAgentSchema,
   Skill: skillSchema,
@@ -58,6 +66,10 @@ const jsonBody = (name: keyof typeof requestSchemas, required = true) => ({
   ...(required ? { required: true } : {}),
   content: { "application/json": { schema: { $ref: `#/components/schemas/${name}` } } },
 });
+const a2aBody = (name: keyof typeof requestSchemas) => ({
+  required: true,
+  content: { "application/a2a+json": { schema: { $ref: `#/components/schemas/${name}` } } },
+});
 
 const response = (description: string, schemaRef?: string, contentType = "application/json") => ({
   description,
@@ -74,6 +86,74 @@ const paths: Record<string, Record<string, unknown>> = {
   "/api/agents": {
     get: { summary: "List agents", responses: { "200": response("Agents") } },
     post: { summary: "Create an agent", requestBody: jsonBody("CreateAgent"), responses: { "201": response("Created agent") } },
+  },
+  "/api/a2a/exposures": {
+    get: { summary: "List admin-managed A2A exposure drafts", responses: { "200": response("A2A exposure drafts") } },
+    post: { summary: "Create an admin-managed A2A exposure draft", requestBody: jsonBody("CreateA2aExposure"), responses: { "201": response("Created A2A exposure draft") } },
+  },
+  "/api/a2a/exposures/{exposureId}": {
+    put: {
+      summary: "Update an admin-managed A2A exposure draft",
+      parameters: [{ name: "exposureId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+      requestBody: jsonBody("UpdateA2aExposure"),
+      responses: { "200": response("Updated A2A exposure draft") },
+    },
+    delete: {
+      summary: "Delete an admin-managed A2A exposure draft",
+      parameters: [{ name: "exposureId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+      responses: { "204": response("Deleted A2A exposure draft") },
+    },
+  },
+  "/a2a/{slug}/.well-known/agent-card.json": {
+    get: {
+      summary: "Get the public or authenticated A2A Agent Card",
+      parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }],
+      responses: { "200": response("A2A Agent Card", undefined, "application/a2a+json"), "404": response("Agent is not published") },
+    },
+  },
+  "/a2a/{slug}/message:send": {
+    post: {
+      summary: "Submit an A2A message and receive a task",
+      parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }, { name: "A2A-Version", in: "header", required: true, schema: { type: "string", enum: ["1.0"] } }],
+      requestBody: a2aBody("A2aSendMessage"),
+      responses: { "200": response("A2A task", undefined, "application/a2a+json"), "401": response("Unauthenticated"), "429": response("Rate limit exceeded") },
+    },
+  },
+  "/a2a/{slug}/message:stream": {
+    post: {
+      summary: "Submit an A2A message and stream task updates",
+      parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }, { name: "A2A-Version", in: "header", required: true, schema: { type: "string", enum: ["1.0"] } }],
+      requestBody: a2aBody("A2aSendMessage"),
+      responses: { "200": response("A2A SSE task stream", undefined, "text/event-stream") },
+    },
+  },
+  "/a2a/{slug}/tasks": {
+    get: {
+      summary: "List caller-owned A2A tasks",
+      parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }, { name: "A2A-Version", in: "header", required: true, schema: { type: "string", enum: ["1.0"] } }, { name: "contextId", in: "query", schema: { type: "string" } }, { name: "pageSize", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } }, { name: "pageToken", in: "query", schema: { type: "string" } }],
+      responses: { "200": response("A2A task page", undefined, "application/a2a+json") },
+    },
+  },
+  "/a2a/{slug}/tasks/{taskId}": {
+    get: {
+      summary: "Get a caller-owned A2A task",
+      parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }, { name: "taskId", in: "path", required: true, schema: { type: "string", format: "uuid" } }, { name: "A2A-Version", in: "header", required: true, schema: { type: "string", enum: ["1.0"] } }],
+      responses: { "200": response("A2A task", undefined, "application/a2a+json") },
+    },
+  },
+  "/a2a/{slug}/tasks/{taskId}:cancel": {
+    post: {
+      summary: "Cancel a caller-owned A2A task",
+      parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }, { name: "taskId", in: "path", required: true, schema: { type: "string", format: "uuid" } }, { name: "A2A-Version", in: "header", required: true, schema: { type: "string", enum: ["1.0"] } }],
+      responses: { "200": response("Canceled or terminal A2A task", undefined, "application/a2a+json") },
+    },
+  },
+  "/a2a/{slug}/tasks/{taskId}:subscribe": {
+    post: {
+      summary: "Subscribe to a caller-owned A2A task over SSE",
+      parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }, { name: "taskId", in: "path", required: true, schema: { type: "string", format: "uuid" } }, { name: "A2A-Version", in: "header", required: true, schema: { type: "string", enum: ["1.0"] } }],
+      responses: { "200": response("A2A SSE task stream", undefined, "text/event-stream") },
+    },
   },
   "/api/agents/{agentId}/chat": {
     post: {
@@ -94,6 +174,7 @@ const paths: Record<string, Record<string, unknown>> = {
   "/api/registry/export": { get: { summary: "Export registry configuration", responses: { "200": response("Registry export", "RegistryImport") } } },
   "/api/registry/import": { post: { summary: "Import registry configuration", requestBody: jsonBody("RegistryImport"), responses: { "200": response("Import result") } } },
   "/api/sessions": { get: { summary: "List sessions", parameters: [{ name: "agentId", in: "query", schema: { type: "string", format: "uuid" } }, { name: "offset", in: "query", schema: { type: "integer", minimum: 0 } }, { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } }], responses: { "200": response("Sessions") } } },
+  "/api/sessions/{sessionId}/messages": { get: { summary: "Read messages and attachment references for a session", parameters: [{ name: "sessionId", in: "path", required: true, schema: { type: "string", format: "uuid" } }], responses: { "200": response("Session messages with attachment metadata") } } },
   "/api/runs": { get: { summary: "List runs", parameters: [{ name: "agentId", in: "query", schema: { type: "string", format: "uuid" } }, { name: "status", in: "query", schema: { type: "string", enum: ["running", "completed", "failed", "cancelled"] } }], responses: { "200": response("Runs") } } },
 };
 
