@@ -46,8 +46,7 @@ test.describe("control panel critical paths", () => {
     await page.getByRole("button", { name: /Agents.*Runtime instances/ }).click();
     await page.getByRole("button", { name: "Add agent", exact: true }).click();
     await page.getByLabel("Name").fill(agentName);
-    await page.locator("#agent-model").click();
-    await page.getByRole("option", { name: modelName, exact: true }).click();
+    await page.locator("#agent-model").selectOption({ label: modelName });
     await page.getByLabel("Instructions").fill("Reply with a short deterministic response.");
     await page.getByRole("button", { name: "Create agent", exact: true }).click();
     await expect(page.getByText(agentName, { exact: true })).toBeVisible();
